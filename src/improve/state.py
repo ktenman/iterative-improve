@@ -30,8 +30,9 @@ class LoopState:
     iteration: int = 0
     results: list[dict] = field(default_factory=list)
 
-    def add(self, result: PhaseResult):
+    def add(self, result: PhaseResult) -> None:
         self.results.append(asdict(result))
+        self.save()
 
     def context(self) -> str:
         changed = [r for r in self.results if r["changes_made"]]
@@ -39,9 +40,11 @@ class LoopState:
             return "None (first iteration)"
         return "\n".join(f"- [{r['phase']}] {r['summary']}" for r in changed)
 
-    def save(self):
+    def save(self) -> None:
         STATE_DIR.mkdir(exist_ok=True)
-        STATE_FILE.write_text(json.dumps(asdict(self), indent=2))
+        temp = STATE_FILE.with_suffix(".tmp")
+        temp.write_text(json.dumps(asdict(self), indent=2))
+        temp.replace(STATE_FILE)
 
     @staticmethod
     def load() -> LoopState | None:
@@ -55,5 +58,5 @@ class LoopState:
                 iteration=data.get("iteration", 0),
                 results=data.get("results", []),
             )
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, TypeError, OSError):
             return None

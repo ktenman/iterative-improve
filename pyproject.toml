@@ -1,11 +1,14 @@
 [project]
 name = "iterative-improve"
-version = "0.1.0"
+version = "0.2.0"
 description = "Iterative code improvement loop using Claude and CI"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = "CC-BY-4.0"
 dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.8", "pytest>=8.0", "pytest-cov>=6.0", "mutmut>=2.0,<3.0"]
 
 [project.scripts]
 iterative-improve = "improve.cli:main"
@@ -20,3 +23,25 @@ packages = ["src/improve"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific rules
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["improve"]
+
+[tool.coverage.run]
+source = ["improve"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
