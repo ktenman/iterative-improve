@@ -1,0 +1,18 @@
+[project]
+name = "ai-checker"
+version = "3.0.0"
+description = "Unified AI text detector: RoBERTa + Desklib DeBERTa + GPT-2 perplexity + pattern rules + QuillBot"
+requires-python = ">=3.10"
+dependencies = [
+    "transformers>=4.40",
+    "torch>=2.0",
+    "numpy",
+    "sentencepiece",
+    "safetensors",
+    "huggingface_hub",
+    "playwright>=1.40",
+    "requests>=2.31",
+]
+
+[project.scripts]
+ai-check = "main:main"

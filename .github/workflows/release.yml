@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, 'Bump version')"
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - run: uv sync --dev
+
+      - name: Ruff check
+        run: uv run ruff check src/ tests/
+
+      - name: Ruff format
+        run: uv run ruff format --check src/ tests/
+
+      - name: Run tests
+        run: uv run pytest -v --tb=short
+
+      - name: Bump patch version
+        id: bump
+        run: |
+          CURRENT=$(python3 -c "
+          try:
+              import tomllib
+          except ImportError:
+              import tomli as tomllib
+          with open('pyproject.toml') as f:
+              print(tomllib.loads(f.read())['project']['version'])
+          ")
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH=$((PATCH + 1))
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          python3 -c "
+          import re
+          with open('pyproject.toml') as f:
+              content = f.read()
+          content = re.sub(
+              r'(?m)(^\[project\].*?^version\s*=\s*)\"[^\"]+\"',
+              r'\g<1>\"${NEW}\"',
+              content,
+              count=1,
+              flags=re.DOTALL,
+          )
+          with open('pyproject.toml', 'w') as f:
+              f.write(content)
+          "
+          echo "version=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumped $CURRENT -> $NEW"
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml
+          git commit -m "Bump version to ${{ steps.bump.outputs.version }}"
+          git push
+
+      - name: Create tag and release
+        run: |
+          git tag "v${{ steps.bump.outputs.version }}"
+          git push origin "v${{ steps.bump.outputs.version }}"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump.outputs.version }}
+          generate_release_notes: true

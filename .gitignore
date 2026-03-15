@@ -4,3 +4,10 @@ dist/
 *.egg-info/
 .improve-loop/
 .venv/
+.coverage
+coverage.xml
+report.xml
+.mutmut-cache
+.idea/
+*.bak
+.DS_Store
