@@ -1,9 +1,11 @@
 import logging
+import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from improve.version import (
+    _auto_upgrade,
     _parse_version,
     check_for_update,
     get_installed_version,
@@ -68,33 +70,98 @@ class TestGetLatestVersion:
         assert result is None
 
 
+class TestAutoUpgrade:
+    def test_runs_uv_tool_upgrade_when_uv_available(self, caplog):
+        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch("improve.version.subprocess.run", return_value=result) as mock_run,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        mock_run.assert_called_once_with(
+            ["/usr/bin/uv", "tool", "upgrade", "iterative-improve"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert "Upgraded to 0.2.0" in caplog.text
+
+    def test_logs_manual_instruction_when_uv_not_available(self, caplog):
+        with (
+            patch("improve.version.shutil.which", return_value=None),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "uv tool upgrade iterative-improve" in caplog.text
+
+    def test_logs_warning_when_upgrade_times_out(self, caplog):
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "improve.version.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="uv", timeout=60),
+            ),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "timed out" in caplog.text
+
+    def test_logs_warning_when_uv_binary_not_executable(self, caplog):
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "improve.version.subprocess.run",
+                side_effect=PermissionError(13, "Permission denied"),
+            ),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "failed to start" in caplog.text
+
+    def test_logs_warning_when_upgrade_fails(self, caplog):
+        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error msg")
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch("improve.version.subprocess.run", return_value=result),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "Upgrade failed" in caplog.text
+
+
 class TestCheckForUpdate:
-    def test_logs_when_newer_version_available(self, caplog):
+    def test_triggers_upgrade_when_newer_version_available(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.1.0"),
             patch("improve.version.get_latest_version", return_value="0.2.0"),
-            caplog.at_level(logging.INFO, logger="improve"),
+            patch("improve.version._auto_upgrade") as mock_upgrade,
         ):
             check_for_update()
 
-        assert "0.2.0" in caplog.text
+        mock_upgrade.assert_called_once_with("0.1.0", "0.2.0")
 
-    def test_does_not_log_when_up_to_date(self, caplog):
+    def test_does_not_upgrade_when_up_to_date(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.2.0"),
             patch("improve.version.get_latest_version", return_value="0.2.0"),
-            caplog.at_level(logging.INFO, logger="improve"),
+            patch("improve.version._auto_upgrade") as mock_upgrade,
         ):
             check_for_update()
 
-        assert "New version" not in caplog.text
+        mock_upgrade.assert_not_called()
 
-    def test_does_not_log_when_latest_unavailable(self, caplog):
+    def test_does_not_upgrade_when_latest_unavailable(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.1.0"),
             patch("improve.version.get_latest_version", return_value=None),
-            caplog.at_level(logging.INFO, logger="improve"),
+            patch("improve.version._auto_upgrade") as mock_upgrade,
         ):
             check_for_update()
 
-        assert "New version" not in caplog.text
+        mock_upgrade.assert_not_called()
