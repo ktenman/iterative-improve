@@ -48,12 +48,16 @@ def _auto_upgrade(installed: str, latest: str) -> None:
         )
         return
     logger.info("update] Upgrading %s → %s …", installed, latest)
-    result = subprocess.run(
-        [uv, "tool", "upgrade", "iterative-improve"],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+    try:
+        result = subprocess.run(
+            [uv, "tool", "upgrade", "iterative-improve"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("update] Upgrade timed out after 60s")
+        return
     if result.returncode == 0:
         logger.info("update] Upgraded to %s (takes effect on next run)", latest)
     else:

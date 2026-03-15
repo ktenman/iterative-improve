@@ -97,6 +97,19 @@ class TestAutoUpgrade:
 
         assert "uv tool upgrade iterative-improve" in caplog.text
 
+    def test_logs_warning_when_upgrade_times_out(self, caplog):
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "improve.version.subprocess.run",
+                side_effect=subprocess.TimeoutExpired(cmd="uv", timeout=60),
+            ),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "timed out" in caplog.text
+
     def test_logs_warning_when_upgrade_fails(self, caplog):
         result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error msg")
         with (
