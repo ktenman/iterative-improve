@@ -110,6 +110,19 @@ class TestAutoUpgrade:
 
         assert "timed out" in caplog.text
 
+    def test_logs_warning_when_uv_binary_not_executable(self, caplog):
+        with (
+            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "improve.version.subprocess.run",
+                side_effect=PermissionError(13, "Permission denied"),
+            ),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            _auto_upgrade("0.1.0", "0.2.0")
+
+        assert "failed to start" in caplog.text
+
     def test_logs_warning_when_upgrade_fails(self, caplog):
         result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error msg")
         with (

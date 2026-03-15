@@ -58,6 +58,9 @@ def _auto_upgrade(installed: str, latest: str) -> None:
     except subprocess.TimeoutExpired:
         logger.warning("update] Upgrade timed out after 60s")
         return
+    except OSError as exc:
+        logger.warning("update] Upgrade failed to start: %s", exc)
+        return
     if result.returncode == 0:
         logger.info("update] Upgraded to %s (takes effect on next run)", latest)
     else:
