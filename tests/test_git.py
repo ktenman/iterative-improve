@@ -6,6 +6,36 @@ from improve import git
 from tests import _cp
 
 
+class TestHeadSha:
+    def test_returns_current_head_sha(self):
+        with patch("improve.git.run", return_value=_cp(stdout="abc123def\n")):
+            assert git.head_sha() == "abc123def"
+
+
+class TestRevertTo:
+    def test_returns_true_on_successful_reset_and_push(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [_cp(), _cp()]
+            assert git.revert_to("abc123", "feature") is True
+
+    def test_returns_false_when_reset_fails(self):
+        with patch("improve.git.run", return_value=_cp(returncode=1, stderr="error")):
+            assert git.revert_to("abc123", "feature") is False
+
+    def test_returns_false_when_force_push_fails(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
+            assert git.revert_to("abc123", "feature") is False
+
+
+class TestDiscardChanges:
+    def test_runs_git_checkout(self):
+        with patch("improve.git.run", return_value=_cp()) as mock_run:
+            git.discard_changes()
+
+        mock_run.assert_called_once_with(["git", "checkout", "--", "."])
+
+
 class TestBranch:
     def test_returns_current_branch_name(self):
         with patch("improve.git.run", return_value=_cp(stdout="feature-x\n")):
@@ -398,7 +428,7 @@ class TestApplyWorktreeChanges:
         ):
             files = git.apply_worktree_changes(str(worktree))
 
-        assert files == ["../../etc/passwd"]
+        assert files == []
         assert not (main / "../../etc/passwd").exists()
 
 

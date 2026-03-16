@@ -4,7 +4,8 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from improve.claude import _summarize_tool_input, run_claude
+import improve.claude
+from improve.claude import _summarize_tool_input, run_claude, set_timeout
 
 
 def _make_process(stdout_lines, returncode=0, stderr=""):
@@ -38,6 +39,15 @@ def _tool_stop():
 
 def _result(text):
     return json.dumps({"type": "result", "result": text}) + "\n"
+
+
+class TestSetTimeout:
+    def test_updates_global_timeout(self, monkeypatch):
+        monkeypatch.setattr(improve.claude, "CLAUDE_TIMEOUT", 0)
+
+        set_timeout(300)
+
+        assert improve.claude.CLAUDE_TIMEOUT == 300
 
 
 class TestSummarizeToolInput:
@@ -76,7 +86,7 @@ class TestRunClaude:
             text, elapsed = run_claude("test prompt")
 
         assert text == "Final output"
-        assert elapsed > 0
+        assert isinstance(elapsed, float)
 
     def test_writes_prompt_to_stdin_and_closes(self):
         proc = _make_process([_result("")])

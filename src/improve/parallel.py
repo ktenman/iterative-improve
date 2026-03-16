@@ -31,17 +31,7 @@ def run_phase_in_worktree(
     elapsed = time.monotonic() - phase_start
     if not files:
         logger.info("%s] No changes", phase)
-        return PhaseResult(
-            iteration=iteration,
-            phase=phase,
-            changes_made=False,
-            files=[],
-            summary="No changes needed",
-            ci_passed=True,
-            ci_retries=0,
-            duration_seconds=elapsed,
-            claude_seconds=total_claude,
-        )
+        return PhaseResult.no_changes(iteration, phase, elapsed, total_claude)
     summary = extract_summary(output)
     logger.info("%s] Changed %d file(s): %s", phase, len(files), ", ".join(files[:5]))
     logger.info("%s] Done in %s", phase, format_duration(elapsed))
@@ -58,15 +48,40 @@ def run_phase_in_worktree(
     )
 
 
-def _collect_results(futures: list[Future[PhaseResult]]) -> list[PhaseResult] | None:
+def _collect_results(
+    futures: list[Future[PhaseResult]], phases: list[str], iteration: int
+) -> list[PhaseResult]:
     results: list[PhaseResult] = []
-    for future in futures:
+    for phase, future in zip(phases, futures, strict=True):
         try:
             results.append(future.result())
         except Exception:
-            logger.exception("parallel] Phase execution failed")
-            return None
+            logger.exception("parallel] Phase %s crashed, skipping", phase)
+            results.append(PhaseResult.crashed(iteration, phase))
     return results
+
+
+def _check_ci_after_batch(
+    branch: str,
+    pre_batch_run_id: int | None,
+    retry_ci_fixes: Callable[..., tuple[bool, int, float, float]],
+    revert_sha: str,
+) -> bool:
+    ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
+        branch,
+        known_previous_id=pre_batch_run_id,
+    )
+    ci_passed, _, _, _ = retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
+    if ci_passed:
+        return True
+    if revert_sha:
+        logger.info("loop] Reverting parallel batch changes (CI failed)")
+        if not git.revert_to(revert_sha, branch):
+            logger.warning("loop] Revert failed, changes may be in inconsistent state")
+            return False
+        return True
+    logger.warning("loop] Stopping: CI failed")
+    return False
 
 
 def run_parallel_batch(
@@ -77,6 +92,7 @@ def run_parallel_batch(
     skip_ci: bool,
     add_result: Callable[[PhaseResult], None],
     retry_ci_fixes: Callable[..., tuple[bool, int, float, float]],
+    revert_sha: str = "",
 ) -> bool:
     branch_diff = git.diff_vs_main()
     pre_batch_run_id = ci.get_latest_run_id(branch) if not skip_ci else None
@@ -103,9 +119,7 @@ def run_parallel_batch(
                 )
                 for phase in phases
             ]
-            results = _collect_results(futures)
-        if results is None:
-            return False
+            results = _collect_results(futures, phases, iteration)
 
         seen_files: set[str] = set()
         for result in results:
@@ -118,8 +132,9 @@ def run_parallel_batch(
                     result.phase,
                     ", ".join(sorted(overlap)),
                 )
-            git.apply_worktree_changes(worktrees[result.phase])
-            seen_files.update(result.files)
+            applied = git.apply_worktree_changes(worktrees[result.phase])
+            result.files = applied
+            seen_files.update(applied)
 
         for result in results:
             add_result(result)
@@ -138,17 +153,9 @@ def run_parallel_batch(
             logger.warning("loop] Stopping: push failed")
             return False
 
-        if not skip_ci:
-            ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
-                branch,
-                known_previous_id=pre_batch_run_id,
-            )
-            ci_passed, _, _, _ = retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
-            if not ci_passed:
-                logger.warning("loop] Stopping: CI failed")
-                return False
-
-        return True
+        return skip_ci or _check_ci_after_batch(
+            branch, pre_batch_run_id, retry_ci_fixes, revert_sha
+        )
     finally:
         for path in worktrees.values():
             git.remove_worktree(path)

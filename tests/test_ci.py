@@ -18,7 +18,7 @@ class TestSetTimeout:
         [(1, 60), (20, 1200)],
     )
     def test_converts_minutes_to_seconds(self, monkeypatch, minutes, expected_seconds):
-        monkeypatch.setattr(ci, "CI_RUN_TIMEOUT", ci.CI_RUN_TIMEOUT)
+        monkeypatch.setattr(ci, "CI_RUN_TIMEOUT", 0)
 
         ci.set_timeout(minutes)
 
