@@ -13,19 +13,16 @@ def provider():
 
 
 class TestSetTimeout:
-    def test_converts_minutes_to_seconds(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("minutes", "expected_seconds"),
+        [(1, 60), (20, 1200)],
+    )
+    def test_converts_minutes_to_seconds(self, monkeypatch, minutes, expected_seconds):
         monkeypatch.setattr(ci, "CI_RUN_TIMEOUT", ci.CI_RUN_TIMEOUT)
 
-        ci.set_timeout(20)
+        ci.set_timeout(minutes)
 
-        assert ci.CI_RUN_TIMEOUT == 1200
-
-    def test_rejects_zero_timeout(self, monkeypatch):
-        monkeypatch.setattr(ci, "CI_RUN_TIMEOUT", ci.CI_RUN_TIMEOUT)
-
-        ci.set_timeout(1)
-
-        assert ci.CI_RUN_TIMEOUT == 60
+        assert expected_seconds == ci.CI_RUN_TIMEOUT
 
 
 class TestSetProvider:
