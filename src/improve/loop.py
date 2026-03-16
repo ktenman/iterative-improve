@@ -272,9 +272,9 @@ class IterationLoop:
 
     def run(self, start_iteration: int, max_iterations: int) -> None:
         self.loop_start = time.monotonic()
+        sep = color.separator()
         for i in range(start_iteration, max_iterations + 1):
             label = str(i) if self.continuous else f"{i}/{max_iterations}"
-            sep = color.separator()
             print(f"\n{sep}\n  {color.section_title(f'Iteration {label}')}\n{sep}")
             logger.info("loop] === Iteration %s ===", label)
             self.state.iteration = i
