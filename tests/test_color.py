@@ -48,14 +48,14 @@ class TestWrap:
 
 
 class TestPhaseColor:
-    def test_returns_green_for_simplify(self):
-        assert color.phase_color("simplify") == color.GREEN
+    def test_returns_dark_green_for_simplify(self):
+        assert color.phase_color("simplify") == color.DARK_GREEN
 
-    def test_returns_yellow_for_review(self):
-        assert color.phase_color("review") == color.YELLOW
+    def test_returns_dark_yellow_for_review(self):
+        assert color.phase_color("review") == color.DARK_YELLOW
 
-    def test_returns_red_for_security(self):
-        assert color.phase_color("security") == color.RED
+    def test_returns_dark_red_for_security(self):
+        assert color.phase_color("security") == color.DARK_RED
 
     def test_returns_empty_string_for_unknown_phase(self):
         assert color.phase_color("unknown") == ""
@@ -136,7 +136,7 @@ class TestColorFormatter:
         formatter = color.ColorFormatter("%(message)s")
         record = logging.LogRecord("test", logging.INFO, "", 0, "simplify] Running...", (), None)
         result = formatter.format(record)
-        assert color.GREEN in result
+        assert color.DARK_GREEN in result
 
     def test_does_not_mutate_original_log_record(self):
         color.enabled = True

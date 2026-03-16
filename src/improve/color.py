@@ -16,9 +16,12 @@ BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 CYAN = "\033[36m"
 BOLD_WHITE = "\033[1;37m"
+DARK_GREEN = "\033[38;5;28m"
+DARK_YELLOW = "\033[38;5;178m"
+DARK_RED = "\033[38;5;124m"
 GRAY = "\033[90m"
 
-PHASE_COLORS = {"simplify": GREEN, "review": YELLOW, "security": RED}
+PHASE_COLORS = {"simplify": DARK_GREEN, "review": DARK_YELLOW, "security": DARK_RED}
 TAG_COLORS = {
     "loop": BOLD_WHITE,
     "ci": CYAN,
@@ -26,7 +29,7 @@ TAG_COLORS = {
     "git": BLUE,
     "sync": BLUE,
     "claude": MAGENTA,
-    "signal": YELLOW,
+    "signal": DARK_YELLOW,
     "update": GRAY,
     "preflight": GRAY,
     "state": GRAY,
