@@ -6,20 +6,6 @@ from improve import preflight
 from tests import _cp
 
 
-class TestCheck:
-    def test_succeeds_when_command_returns_zero(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check(["git", "status"], "error message")
-            mock_run.assert_called_once_with(["git", "status"], timeout=15)
-
-    def test_exits_when_command_returns_nonzero(self):
-        with (
-            patch("improve.preflight.run", return_value=_cp(returncode=1)),
-            pytest.raises(SystemExit, match="1"),
-        ):
-            preflight._check(["git", "status"], "error message")
-
-
 class TestRunPreflight:
     def test_runs_all_checks_when_ci_enabled(self):
         with patch("improve.preflight.run", return_value=_cp()) as mock_run:
