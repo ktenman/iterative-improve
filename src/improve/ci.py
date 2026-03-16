@@ -44,6 +44,7 @@ def get_latest_run_id(branch: str) -> int | None:
         runs = json.loads(result.stdout)
         return runs[0]["databaseId"] if runs else None
     except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+        logger.warning("ci] Failed to parse CI run list output")
         return None
 
 
@@ -71,6 +72,7 @@ def _get_run_conclusion(run_id: int) -> str | None:
     try:
         return json.loads(result.stdout).get("conclusion")
     except (json.JSONDecodeError, AttributeError):
+        logger.warning("ci] Failed to parse CI run conclusion for run #%d", run_id)
         return None
 
 

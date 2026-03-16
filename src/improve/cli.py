@@ -88,6 +88,12 @@ def main() -> None:
     threading.Thread(target=check_for_update, daemon=True).start()
     require_tools()
 
+    if args.iterations < 1:
+        logger.error("loop] Iterations must be at least 1")
+        sys.exit(1)
+    if args.ci_timeout < 1:
+        logger.error("loop] CI timeout must be at least 1 minute")
+        sys.exit(1)
     ci.set_timeout(args.ci_timeout)
     phases = _validate_phases(args.phases)
 
