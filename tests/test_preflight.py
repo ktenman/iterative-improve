@@ -6,72 +6,18 @@ from improve import preflight
 from tests import _cp
 
 
-class TestCheckGitRemote:
-    def test_passes_when_remote_is_reachable(self):
+class TestCheck:
+    def test_succeeds_when_command_returns_zero(self):
         with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_git_remote()
-            mock_run.assert_called_once_with(["git", "ls-remote", "--heads", "origin"], timeout=15)
+            preflight._check(["git", "status"], "error message")
+            mock_run.assert_called_once_with(["git", "status"], timeout=15)
 
-    def test_exits_when_remote_is_unreachable(self):
+    def test_exits_when_command_returns_nonzero(self):
         with (
             patch("improve.preflight.run", return_value=_cp(returncode=1)),
             pytest.raises(SystemExit, match="1"),
         ):
-            preflight._check_git_remote()
-
-
-class TestCheckGitPush:
-    def test_passes_when_push_is_allowed(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_git_push("feature-x")
-            mock_run.assert_called_once_with(
-                ["git", "push", "--dry-run", "origin", "feature-x"], timeout=15
-            )
-
-    def test_exits_when_push_is_denied(self):
-        with (
-            patch("improve.preflight.run", return_value=_cp(returncode=1)),
-            pytest.raises(SystemExit, match="1"),
-        ):
-            preflight._check_git_push("feature-x")
-
-
-class TestCheckCiAuth:
-    def test_passes_when_gh_is_authenticated(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_ci_auth("gh")
-            mock_run.assert_called_once_with(["gh", "auth", "status"], timeout=15)
-
-    def test_passes_when_glab_is_authenticated(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_ci_auth("glab")
-            mock_run.assert_called_once_with(["glab", "auth", "status"], timeout=15)
-
-    def test_exits_when_not_authenticated(self):
-        with (
-            patch("improve.preflight.run", return_value=_cp(returncode=1)),
-            pytest.raises(SystemExit, match="1"),
-        ):
-            preflight._check_ci_auth("gh")
-
-
-class TestCheckCiRepoAccess:
-    def test_uses_json_flag_for_github(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_ci_repo_access("gh")
-            mock_run.assert_called_once_with(["gh", "repo", "view", "--json", "name"], timeout=15)
-
-    def test_uses_plain_view_for_gitlab(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_ci_repo_access("glab")
-            mock_run.assert_called_once_with(["glab", "repo", "view"], timeout=15)
-
-    def test_exits_when_repo_is_not_accessible(self):
-        with (
-            patch("improve.preflight.run", return_value=_cp(returncode=1)),
-            pytest.raises(SystemExit, match="1"),
-        ):
-            preflight._check_ci_repo_access("gh")
+            preflight._check(["git", "status"], "error message")
 
 
 class TestRunPreflight:
