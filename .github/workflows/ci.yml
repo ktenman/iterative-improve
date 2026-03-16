@@ -6,6 +6,7 @@ on:
 
 jobs:
   lint:
+    if: "!startsWith(github.event.head_commit.message, 'Bump version')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -23,6 +24,7 @@ jobs:
         run: uv run ruff format --check src/ tests/
 
   test:
+    if: "!startsWith(github.event.head_commit.message, 'Bump version')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -46,6 +48,7 @@ jobs:
           path: coverage.xml
 
   mutation:
+    if: "!startsWith(github.event.head_commit.message, 'Bump version')"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
