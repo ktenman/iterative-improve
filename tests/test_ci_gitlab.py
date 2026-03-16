@@ -34,7 +34,7 @@ class TestGetLatestRunId:
             provider.get_latest_run_id("my-branch")
 
         mock_run.assert_called_once_with(
-            ["glab", "ci", "list", "--branch", "my-branch", "--per-page", "1", "-o", "json"]
+            ["glab", "ci", "list", "--ref", "my-branch", "--per-page", "1", "-F", "json"]
         )
 
 
@@ -71,6 +71,13 @@ class TestGetRunConclusion:
         with patch("improve.ci_gitlab.run", return_value=_cp(stdout="bad")):
             assert provider.get_run_conclusion(1) is None
 
+    def test_returns_none_when_status_is_unhashable(self, provider):
+        with patch(
+            "improve.ci_gitlab.run",
+            return_value=_cp(stdout=json.dumps({"status": ["not", "a", "string"]})),
+        ):
+            assert provider.get_run_conclusion(1) is None
+
 
 class TestWatchRun:
     @pytest.mark.parametrize(
@@ -102,16 +109,75 @@ class TestWatchRun:
 
 
 class TestGetFailedLogs:
-    def test_returns_log_output(self, provider):
-        with patch("improve.ci_gitlab.run", return_value=_cp(stdout="error details")):
+    def _pipeline_json(self, jobs: list[dict]) -> str:
+        return json.dumps({"jobs": jobs})
+
+    def test_returns_log_output_for_failed_jobs(self, provider):
+        pipeline = self._pipeline_json([{"id": 10, "status": "failed"}])
+        with patch(
+            "improve.ci_gitlab.run",
+            side_effect=[
+                _cp(stdout=pipeline),
+                _cp(stdout="error details"),
+            ],
+        ):
             assert provider.get_failed_logs(1) == "error details"
 
+    def test_concatenates_logs_from_multiple_failed_jobs(self, provider):
+        pipeline = self._pipeline_json(
+            [
+                {"id": 10, "status": "failed"},
+                {"id": 11, "status": "failed"},
+            ]
+        )
+        with patch(
+            "improve.ci_gitlab.run",
+            side_effect=[
+                _cp(stdout=pipeline),
+                _cp(stdout="log A"),
+                _cp(stdout="log B"),
+            ],
+        ):
+            assert provider.get_failed_logs(1) == "log A\nlog B"
+
+    def test_skips_successful_jobs(self, provider):
+        pipeline = self._pipeline_json(
+            [
+                {"id": 10, "status": "success"},
+                {"id": 11, "status": "failed"},
+            ]
+        )
+        with patch(
+            "improve.ci_gitlab.run",
+            side_effect=[
+                _cp(stdout=pipeline),
+                _cp(stdout="only failure"),
+            ],
+        ):
+            assert provider.get_failed_logs(1) == "only failure"
+
     def test_truncates_long_output(self, provider):
-        with patch("improve.ci_gitlab.run", return_value=_cp(stdout="x" * 5000)):
+        pipeline = self._pipeline_json([{"id": 10, "status": "failed"}])
+        with patch(
+            "improve.ci_gitlab.run",
+            side_effect=[
+                _cp(stdout=pipeline),
+                _cp(stdout="x" * 5000),
+            ],
+        ):
             result = provider.get_failed_logs(1)
 
         assert len(result) == 4000
 
-    def test_returns_fallback_when_empty(self, provider):
-        with patch("improve.ci_gitlab.run", return_value=_cp(stdout="")):
+    def test_returns_fallback_when_pipeline_command_fails(self, provider):
+        with patch("improve.ci_gitlab.run", return_value=_cp(returncode=1)):
             assert provider.get_failed_logs(1) == "No logs available"
+
+    def test_returns_fallback_when_no_failed_jobs(self, provider):
+        pipeline = self._pipeline_json([{"id": 10, "status": "success"}])
+        with patch("improve.ci_gitlab.run", return_value=_cp(stdout=pipeline)):
+            assert provider.get_failed_logs(1) == "No failed jobs found"
+
+    def test_returns_fallback_when_jobs_payload_is_non_dict(self, provider):
+        with patch("improve.ci_gitlab.run", return_value=_cp(stdout="[1, 2, 3]")):
+            assert provider.get_failed_logs(1) == "No failed jobs found"
