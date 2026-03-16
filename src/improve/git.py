@@ -11,6 +11,27 @@ from improve.prompt import build_conflict_prompt, extract_summary
 logger = logging.getLogger("improve")
 
 
+def head_sha() -> str:
+    return run(["git", "rev-parse", "HEAD"]).stdout.strip()
+
+
+def revert_to(sha: str, branch_name: str) -> bool:
+    reset = run(["git", "reset", "--hard", sha])
+    if reset.returncode != 0:
+        logger.warning("git] Reset failed: %s", reset.stderr.strip())
+        return False
+    push = run(["git", "push", "--force-with-lease", "origin", branch_name])
+    if push.returncode != 0:
+        logger.warning("git] Force push failed: %s", push.stderr.strip())
+        return False
+    logger.info("git] Reverted to %s", sha[:8])
+    return True
+
+
+def discard_changes() -> None:
+    run(["git", "checkout", "--", "."])
+
+
 def branch() -> str:
     return run(["git", "branch", "--show-current"]).stdout.strip()
 
@@ -197,6 +218,7 @@ def apply_worktree_changes(worktree_path: str) -> list[str]:
     main_root = run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
     worktree = Path(worktree_path).resolve()
     main = Path(main_root).resolve()
+    applied: list[str] = []
     for f in files:
         src = (worktree / f).resolve()
         dst = (main / f).resolve()
@@ -208,7 +230,8 @@ def apply_worktree_changes(worktree_path: str) -> list[str]:
             shutil.copy2(src, dst)
         elif dst.exists():
             dst.unlink()
-    return files
+        applied.append(f)
+    return applied
 
 
 def squash_branch(branch_name: str, message: str) -> bool:

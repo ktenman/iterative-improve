@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -8,7 +9,15 @@ from improve.state import LoopState, PhaseResult
 
 
 def _make_loop(
-    tmp_path, monkeypatch, skip_ci=False, batch=False, phases=None, squash=False, parallel=False
+    tmp_path,
+    monkeypatch,
+    skip_ci=False,
+    batch=False,
+    phases=None,
+    squash=False,
+    parallel=False,
+    revert_on_fail=False,
+    continuous=False,
 ):
     monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
     monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
@@ -22,6 +31,8 @@ def _make_loop(
         phases=phases,
         squash=squash,
         parallel=parallel,
+        revert_on_fail=revert_on_fail,
+        continuous=continuous,
     )
 
 
@@ -127,6 +138,22 @@ class TestRetryCiFixes:
 
         assert passed is False
         assert retries == MAX_CI_RETRIES
+
+    def test_logs_warning_when_all_retries_exhausted(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.claude.run_claude", return_value=("out", 1.0)),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(False, "still failing", 2.0)),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            passed, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
+
+        assert passed is False
+        assert retries == MAX_CI_RETRIES
+        assert "All 5 attempts exhausted" in caplog.text
 
     def test_accumulates_claude_and_ci_time_across_retries(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -361,6 +388,24 @@ class TestSquashBranch:
 
         mock_squash.assert_not_called()
 
+    def test_excludes_reverted_results_from_squash_message(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, squash=True)
+        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))
+        loop.state.add(
+            PhaseResult(1, "review", True, ["b.py"], "Reverted change", False, 1, reverted=True)
+        )
+
+        with (
+            patch("improve.git.squash_branch", return_value=True) as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 1)
+
+        message = mock_squash.call_args[0][1]
+        assert "Extracted helper" in message
+        assert "Reverted change" not in message
+
     def test_does_not_squash_when_flag_is_false(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch, squash=False)
         loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0))
@@ -467,3 +512,234 @@ class TestRunParallelDispatch:
             loop.run(1, 1)
 
         mock_parallel.assert_called_once_with(1)
+
+
+class TestRevertOnFail:
+    def test_sequential_reverts_and_continues_on_ci_failure(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=True, phases=["simplify", "review"])
+        results = [
+            PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1),
+            PhaseResult(1, "review", True, ["b.py"], "More", True, 0),
+        ]
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch("improve.git.revert_to", return_value=True) as mock_revert,
+            patch.object(loop, "run_phase", side_effect=results),
+        ):
+            result = loop.run_sequential_iteration(1)
+
+        mock_revert.assert_called_once_with("abc123", "feature")
+        assert result is True
+        reverted = [r for r in loop.state.results if r.get("reverted")]
+        assert len(reverted) == 1
+        assert reverted[0]["phase"] == "simplify"
+
+    def test_sequential_stops_when_revert_fails(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=True, phases=["simplify", "review"])
+        ci_failed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch("improve.git.revert_to", return_value=False),
+            patch.object(loop, "run_phase", return_value=ci_failed),
+        ):
+            result = loop.run_sequential_iteration(1)
+
+        assert result is False
+        assert len(loop.state.results) == 1
+
+    def test_sequential_stops_on_ci_failure_without_revert_flag(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=False)
+        ci_failed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch.object(loop, "run_phase", return_value=ci_failed),
+        ):
+            result = loop.run_sequential_iteration(1)
+
+        assert result is False
+
+    def test_batch_reverts_all_on_ci_failure(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            monkeypatch,
+            batch=True,
+            skip_ci=False,
+            revert_on_fail=True,
+            phases=["simplify"],
+        )
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch.object(loop, "run_phase", return_value=changed),
+            patch("improve.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(False, 1, 1.0, 2.0)),
+            patch("improve.git.revert_to", return_value=True) as mock_revert,
+        ):
+            result = loop.run_batch_iteration(1)
+
+        assert result is True
+        mock_revert.assert_called_once_with("abc123", "feature")
+
+    def test_batch_stops_when_revert_fails(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            monkeypatch,
+            batch=True,
+            skip_ci=False,
+            revert_on_fail=True,
+            phases=["simplify"],
+        )
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch.object(loop, "run_phase", return_value=changed),
+            patch("improve.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(False, 1, 1.0, 2.0)),
+            patch("improve.git.revert_to", return_value=False),
+        ):
+            result = loop.run_batch_iteration(1)
+
+        assert result is False
+
+    def test_parallel_marks_results_as_reverted_on_ci_failure(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            monkeypatch,
+            parallel=True,
+            skip_ci=False,
+            revert_on_fail=True,
+            phases=["simplify"],
+        )
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc123"),
+            patch(
+                "improve.loop.run_parallel_batch",
+                side_effect=lambda **kwargs: (kwargs["add_result"](changed), True)[1],
+            ),
+        ):
+            result = loop.run_parallel_batch_iteration(1)
+
+        assert result is True
+        reverted = [r for r in loop.state.results if r.get("reverted")]
+        assert len(reverted) == 1
+        assert reverted[0]["phase"] == "simplify"
+
+
+class TestDropConvergedPhases:
+    def test_crashed_phase_is_not_dropped_from_active_phases(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"], skip_ci=True)
+        results = [
+            PhaseResult.crashed(1, "simplify"),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+        ]
+
+        loop._drop_converged_phases(results)
+
+        assert "simplify" in loop._active_phases
+
+    def test_converged_phase_is_dropped_from_active_phases(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"], skip_ci=True)
+        results = [
+            PhaseResult(1, "simplify", False, [], "No changes needed", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+        ]
+
+        loop._drop_converged_phases(results)
+
+        assert "simplify" not in loop._active_phases
+        assert "review" in loop._active_phases
+
+
+class TestCrashRecovery:
+    def test_sequential_continues_after_phase_crash(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"], skip_ci=True)
+        ok_result = PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc"),
+            patch.object(
+                loop,
+                "run_phase",
+                side_effect=[RuntimeError("boom"), ok_result],
+            ),
+            patch("improve.git.discard_changes"),
+        ):
+            result = loop.run_sequential_iteration(1)
+
+        assert result is True
+        assert len(loop.state.results) == 2
+        assert loop.state.results[0]["summary"] == "Phase crashed"
+        assert loop.state.results[1]["changes_made"] is True
+
+    def test_batch_continues_after_phase_crash(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            monkeypatch,
+            batch=True,
+            skip_ci=True,
+            phases=["simplify", "review"],
+        )
+        ok_result = PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0)
+
+        with (
+            patch("improve.git.head_sha", return_value="abc"),
+            patch.object(
+                loop,
+                "run_phase",
+                side_effect=[RuntimeError("crash"), ok_result],
+            ),
+            patch("improve.git.discard_changes"),
+        ):
+            result = loop.run_batch_iteration(1)
+
+        assert result is True
+        assert loop.state.results[0]["summary"] == "Phase crashed"
+
+
+class TestContinuousMode:
+    def test_shows_iteration_without_max_in_continuous_mode(self, tmp_path, monkeypatch, capsys):
+        loop = _make_loop(tmp_path, monkeypatch, continuous=True)
+
+        with (
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 1000)
+
+        output = capsys.readouterr().out
+        assert "Iteration 1 ---" in output
+        assert "1/1000" not in output
+
+    def test_shows_iteration_with_max_when_not_continuous(self, tmp_path, monkeypatch, capsys):
+        loop = _make_loop(tmp_path, monkeypatch, continuous=False)
+
+        with (
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 5)
+
+        output = capsys.readouterr().out
+        assert "Iteration 1/5 ---" in output
+
+
+class TestPrintSummaryReverted:
+    def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch, capsys):
+        loop = _make_loop(tmp_path, monkeypatch)
+        result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
+        loop.state.add(result)
+
+        loop.print_summary(10.0)
+
+        output = capsys.readouterr().out
+        assert "CI:REVT" in output
+        assert "Reverted:       1" in output

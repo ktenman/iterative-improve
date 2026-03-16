@@ -13,13 +13,16 @@ CLI tool that runs iterative code improvement loops on feature branches using Cl
 uv tool install .
 
 # Run the tool (must be on a feature branch, not main/master)
-iterative-improve -n 5
-iterative-improve -n 5 --batch              # all phases then CI once (faster)
-iterative-improve -n 5 --parallel           # phases in parallel via git worktrees (fastest)
-iterative-improve -n 5 --resume             # resume after interruption
-iterative-improve -n 3 --skip-ci            # skip CI checks
-iterative-improve -n 5 --phases simplify,review  # specific phases only
-iterative-improve -n 5 --squash             # squash commits when done
+iterative-improve                           # runs continuously until convergence
+iterative-improve -n 5                      # cap at 5 iterations
+iterative-improve --batch                   # all phases then CI once (faster)
+iterative-improve --parallel                # phases in parallel via git worktrees (fastest)
+iterative-improve --resume                  # resume after interruption
+iterative-improve --skip-ci                 # skip CI checks
+iterative-improve --phases simplify,review  # specific phases only
+iterative-improve --squash                  # squash commits when done
+iterative-improve --revert-on-fail          # revert bad changes, keep going
+iterative-improve --phase-timeout 300       # Claude subprocess timeout (default: 900s)
 
 # Lint
 uv run ruff check src/ tests/
@@ -53,8 +56,12 @@ All source is in `src/improve/`. Entry point: `improve.cli:main`.
 - External tools required at runtime: `git`, `claude` (Claude Code CLI), `gh` (GitHub CLI)
 - State persists to `.improve-loop/` directory (state.json + run.log)
 - Three phases available: `simplify`, `review`, `security` — configurable via `--phases`
-- Claude subprocess timeout: 900s. CI run timeout: configurable via `--ci-timeout` (default 15 min)
+- Runs continuously by default (until convergence); use `-n` to cap iterations
+- Claude subprocess timeout: configurable via `--phase-timeout` (default 900s)
+- CI run timeout: configurable via `--ci-timeout` (default 15 min)
 - CI fix retries capped at 5 attempts per phase
+- `--revert-on-fail` reverts changes that fail CI (`git reset --hard` + force push) and continues
+- Crash recovery: phase exceptions are caught, working tree is cleaned, loop continues
 - `--batch` and `--parallel` are mutually exclusive (argparse enforced)
 - `--parallel` runs all phases concurrently in git worktrees, merges changes, single commit+push
 - `--squash` squashes all branch commits into one via `git reset --soft` + force push

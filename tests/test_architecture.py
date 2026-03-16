@@ -17,6 +17,7 @@ ALLOWED_IMPORTS = {
         "improve",
         "improve.ci",
         "improve.ci_gitlab",
+        "improve.claude",
         "improve.git",
         "improve.loop",
         "improve.preflight",
@@ -51,7 +52,7 @@ ALLOWED_IMPORTS = {
     "preflight": {"improve.process"},
     "process": set(),
     "prompt": set(),
-    "state": set(),
+    "state": {"improve.process"},
     "version": set(),
 }
 

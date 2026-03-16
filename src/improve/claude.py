@@ -15,6 +15,12 @@ logger = logging.getLogger("improve")
 
 CLAUDE_TIMEOUT = 900
 
+
+def set_timeout(seconds: int) -> None:
+    global CLAUDE_TIMEOUT
+    CLAUDE_TIMEOUT = seconds
+
+
 _active_processes: set[subprocess.Popen] = set()
 _process_lock = threading.RLock()
 

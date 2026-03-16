@@ -6,7 +6,7 @@ import sys
 import threading
 from datetime import datetime
 
-from improve import ci, git
+from improve import ci, claude, git
 from improve.ci_gitlab import GitLabCI
 from improve.loop import IterationLoop
 from improve.preflight import run_preflight
@@ -40,7 +40,9 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Iterative code improvement loop using Claude and CI"
     )
-    parser.add_argument("-n", "--iterations", type=int, default=10)
+    parser.add_argument(
+        "-n", "--iterations", type=int, default=None, help="Max iterations (omit for continuous)"
+    )
     parser.add_argument("--ci-timeout", type=int, default=15, help="CI timeout in minutes")
     parser.add_argument("--skip-ci", action="store_true")
     mode_group = parser.add_mutually_exclusive_group()
@@ -71,6 +73,17 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="CI provider (default: auto-detect from git remote)",
     )
+    parser.add_argument(
+        "--revert-on-fail",
+        action="store_true",
+        help="Revert changes that fail CI instead of stopping",
+    )
+    parser.add_argument(
+        "--phase-timeout",
+        type=int,
+        default=900,
+        help="Phase timeout in seconds (default: %(default)s)",
+    )
     return parser.parse_args()
 
 
@@ -100,13 +113,17 @@ def main() -> None:
     ci_tool = "glab" if platform == "gitlab" else "gh"
     require_tools(ci_tool)
 
-    if args.iterations < 1:
+    if args.iterations is not None and args.iterations < 1:
         logger.error("loop] Iterations must be at least 1")
         sys.exit(1)
     if args.ci_timeout < 1:
         logger.error("loop] CI timeout must be at least 1 minute")
         sys.exit(1)
+    if args.phase_timeout < 30:
+        logger.error("loop] Phase timeout must be at least 30 seconds")
+        sys.exit(1)
     ci.set_timeout(args.ci_timeout)
+    claude.set_timeout(args.phase_timeout)
     phases = _validate_phases(args.phases)
 
     current_branch = git.branch()
@@ -123,6 +140,8 @@ def main() -> None:
 
     run_preflight(current_branch, ci_tool, args.skip_ci)
 
+    continuous = args.iterations is None
+    max_iterations = 1000 if continuous else args.iterations
     start_iteration = 1
     state = LoopState(branch=current_branch, started_at=datetime.now().isoformat())
     if args.resume:
@@ -145,35 +164,38 @@ def main() -> None:
         phases=phases,
         squash=args.squash,
         parallel=args.parallel,
+        revert_on_fail=args.revert_on_fail,
+        continuous=continuous,
     )
     loop.install_signal_handlers()
 
     mode = "parallel" if args.parallel else ("batch" if args.batch else "sequential")
+    iter_display = "continuous" if continuous else f"{start_iteration}-{max_iterations}"
     header = (
         f"\n{'=' * 50}\n"
         f"  Iterative Improvement Loop v{get_installed_version()}\n"
         f"  Branch:     {current_branch}\n"
-        f"  Iterations: {start_iteration}-{args.iterations}\n"
+        f"  Iterations: {iter_display}\n"
         f"  Phases:     {', '.join(phases)}\n"
         f"  Mode:       {mode}\n"
         f"  CI:         {'skip' if args.skip_ci else f'{args.ci_timeout}m timeout'}\n"
+        f"  Revert:     {'yes' if args.revert_on_fail else 'no'}\n"
         f"  Squash:     {'yes' if args.squash else 'no'}\n"
         f"{'=' * 50}"
     )
     print(header)
     logger.info(
-        "loop] Started: branch=%s iterations=%d-%d phases=%s mode=%s skip_ci=%s squash=%s",
+        "loop] Started: branch=%s iterations=%s phases=%s mode=%s skip_ci=%s revert=%s",
         current_branch,
-        start_iteration,
-        args.iterations,
+        iter_display,
         ",".join(phases),
         mode,
         args.skip_ci,
-        args.squash,
+        args.revert_on_fail,
     )
 
     if not git.sync_with_main(current_branch):
         logger.error("loop] Cannot sync with main, aborting")
         sys.exit(1)
 
-    loop.run(start_iteration, args.iterations)
+    loop.run(start_iteration, max_iterations)

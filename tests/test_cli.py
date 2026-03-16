@@ -10,7 +10,7 @@ class TestParseArgs:
     def test_uses_default_values_when_no_args_given(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["iterative-improve"])
         args = _parse_args()
-        assert args.iterations == 10
+        assert args.iterations is None
         assert args.ci_timeout == 15
         assert args.skip_ci is False
         assert args.batch is False
@@ -19,6 +19,8 @@ class TestParseArgs:
         assert "security" in args.phases
         assert args.squash is False
         assert args.ci_provider is None
+        assert args.revert_on_fail is False
+        assert args.phase_timeout == 900
 
     def test_parses_all_custom_values(self, monkeypatch):
         monkeypatch.setattr(
@@ -35,6 +37,9 @@ class TestParseArgs:
                 "--phases",
                 "simplify,security",
                 "--squash",
+                "--revert-on-fail",
+                "--phase-timeout",
+                "300",
             ],
         )
         args = _parse_args()
@@ -45,6 +50,8 @@ class TestParseArgs:
         assert args.resume is True
         assert args.phases == "simplify,security"
         assert args.squash is True
+        assert args.revert_on_fail is True
+        assert args.phase_timeout == 300
 
     @pytest.mark.parametrize("provider", ["github", "gitlab"])
     def test_parses_ci_provider(self, monkeypatch, provider):
@@ -137,6 +144,20 @@ class TestMain:
             main()
         assert exc_info.value.code == 1
 
+    @pytest.mark.parametrize("timeout", ["10", "29"])
+    def test_exits_with_code_1_when_phase_timeout_below_minimum(self, monkeypatch, timeout):
+        monkeypatch.setattr(
+            "sys.argv", ["iterative-improve", "-n", "1", "--phase-timeout", timeout]
+        )
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
     @pytest.mark.parametrize("timeout", ["0", "-5"])
     def test_exits_with_code_1_when_ci_timeout_below_minimum(self, monkeypatch, timeout):
         monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", timeout])
@@ -148,6 +169,23 @@ class TestMain:
         ):
             main()
         assert exc_info.value.code == 1
+
+    def test_runs_in_continuous_mode_by_default(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "--skip-ci"])
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            patch("improve.cli.ci"),
+            patch("improve.git.branch", return_value="feature"),
+            patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.cli.run_preflight"),
+            patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.loop.IterationLoop.run") as mock_run,
+            patch("improve.loop.IterationLoop.install_signal_handlers"),
+        ):
+            main()
+            mock_run.assert_called_once_with(1, 1000)
 
     def test_exits_when_initial_sync_with_main_fails(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--skip-ci"])
