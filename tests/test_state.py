@@ -1,6 +1,9 @@
 import json
 from dataclasses import asdict
 
+import pytest
+
+from improve import color
 from improve.state import LoopState, PhaseResult, format_summary
 
 
@@ -104,6 +107,10 @@ class TestLoopState:
 
 
 class TestFormatSummary:
+    @pytest.fixture(autouse=True)
+    def _disable_color(self):
+        color.enabled = False
+
     def test_includes_result_details(self):
         results = [asdict(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))]
 

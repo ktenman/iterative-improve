@@ -6,7 +6,7 @@ import sys
 import threading
 from datetime import datetime
 
-from improve import ci, claude, git
+from improve import ci, claude, color, git
 from improve.ci_gitlab import GitLabCI
 from improve.loop import IterationLoop
 from improve.preflight import run_preflight
@@ -24,7 +24,7 @@ def _setup_logging() -> None:
 
     console = logging.StreamHandler()
     console.setLevel(logging.INFO)
-    console.setFormatter(logging.Formatter("  %(asctime)s [%(message)s", datefmt="%H:%M:%S"))
+    console.setFormatter(color.ColorFormatter("  %(asctime)s [%(message)s", datefmt="%H:%M:%S"))
 
     file_handler = logging.FileHandler(LOG_FILE, mode="a")
     file_handler.setLevel(logging.DEBUG)
@@ -84,6 +84,7 @@ def _parse_args() -> argparse.Namespace:
         default=900,
         help="Phase timeout in seconds (default: %(default)s)",
     )
+    parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     return parser.parse_args()
 
 
@@ -105,6 +106,7 @@ def _validate_phases(raw: str) -> list[str]:
 
 def main() -> None:
     args = _parse_args()
+    color.init(force_no_color=args.no_color)
     _setup_logging()
     threading.Thread(target=check_for_update, daemon=True).start()
     platform = args.ci_provider or git.detect_platform()
@@ -171,8 +173,9 @@ def main() -> None:
 
     mode = "parallel" if args.parallel else ("batch" if args.batch else "sequential")
     iter_display = "continuous" if continuous else f"{start_iteration}-{max_iterations}"
+    border = color.wrap("=" * 50, color.BOLD + color.CYAN)
     header = (
-        f"\n{'=' * 50}\n"
+        f"\n{border}\n"
         f"  Iterative Improvement Loop v{get_installed_version()}\n"
         f"  Branch:     {current_branch}\n"
         f"  Iterations: {iter_display}\n"
@@ -181,7 +184,7 @@ def main() -> None:
         f"  CI:         {'skip' if args.skip_ci else f'{args.ci_timeout}m timeout'}\n"
         f"  Revert:     {'yes' if args.revert_on_fail else 'no'}\n"
         f"  Squash:     {'yes' if args.squash else 'no'}\n"
-        f"{'=' * 50}"
+        f"{border}"
     )
     print(header)
     logger.info(
