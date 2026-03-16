@@ -126,6 +126,50 @@ class TestMain:
             main()
             mock_run.assert_called_once_with(1, 3)
 
+    def test_exits_with_code_1_when_iterations_is_zero(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "0"])
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
+    def test_exits_with_code_1_when_iterations_is_negative(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "-3"])
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
+    def test_exits_with_code_1_when_ci_timeout_is_zero(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", "0"])
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
+    def test_exits_with_code_1_when_ci_timeout_is_negative(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", "-5"])
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
     def test_exits_when_initial_sync_with_main_fails(self, monkeypatch):
         monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--skip-ci"])
         with (

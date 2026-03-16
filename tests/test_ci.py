@@ -13,6 +13,13 @@ class TestSetTimeout:
 
         assert ci.CI_RUN_TIMEOUT == 1200
 
+    def test_rejects_zero_timeout(self, monkeypatch):
+        monkeypatch.setattr(ci, "CI_RUN_TIMEOUT", ci.CI_RUN_TIMEOUT)
+
+        ci.set_timeout(1)
+
+        assert ci.CI_RUN_TIMEOUT == 60
+
 
 class TestGetLatestRunId:
     def test_returns_run_id_from_gh_output(self):
@@ -35,17 +42,19 @@ class TestGetLatestRunId:
 
         assert result is None
 
-    def test_returns_none_on_malformed_json_output(self):
+    def test_returns_none_and_warns_on_malformed_json_output(self, caplog):
         with patch("improve.ci.run", return_value=_cp(stdout="not valid json")):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
+        assert "Failed to parse CI run list output" in caplog.text
 
-    def test_returns_none_when_json_has_unexpected_structure(self):
+    def test_returns_none_and_warns_when_json_has_unexpected_structure(self, caplog):
         with patch("improve.ci.run", return_value=_cp(stdout='{"error": "rate limited"}')):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
+        assert "Failed to parse CI run list output" in caplog.text
 
 
 class TestWaitForCi:
@@ -126,6 +135,12 @@ class TestGetRunConclusion:
     def test_returns_none_on_malformed_json(self):
         with patch("improve.ci.run", return_value=_cp(stdout="not json")):
             assert ci._get_run_conclusion(42) is None
+
+    def test_warns_on_malformed_json(self, caplog):
+        with patch("improve.ci.run", return_value=_cp(stdout="not json")):
+            ci._get_run_conclusion(42)
+
+        assert "Failed to parse CI run conclusion for run #42" in caplog.text
 
 
 class TestWatchRun:
