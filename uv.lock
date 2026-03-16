@@ -175,7 +175,7 @@ wheels = [
 
 [[package]]
 name = "iterative-improve"
-version = "0.2.3"
+version = "0.2.4"
 source = { editable = "." }
 
 [package.dev-dependencies]

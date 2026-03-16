@@ -11,7 +11,7 @@ from improve.loop import IterationLoop
 from improve.process import require_tools
 from improve.prompt import AVAILABLE_PHASES
 from improve.state import LOG_FILE, STATE_DIR, LoopState
-from improve.version import check_for_update
+from improve.version import check_for_update, get_installed_version
 
 logger = logging.getLogger("improve")
 
@@ -130,7 +130,7 @@ def main() -> None:
     mode = "parallel" if args.parallel else ("batch" if args.batch else "sequential")
     header = (
         f"\n{'=' * 50}\n"
-        f"  Iterative Improvement Loop\n"
+        f"  Iterative Improvement Loop v{get_installed_version()}\n"
         f"  Branch:     {current_branch}\n"
         f"  Iterations: {start_iteration}-{args.iterations}\n"
         f"  Phases:     {', '.join(phases)}\n"
