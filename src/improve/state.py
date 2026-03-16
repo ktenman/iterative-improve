@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+logger = logging.getLogger("improve")
 
 STATE_DIR = Path(".improve-loop")
 STATE_FILE = STATE_DIR / "state.json"
@@ -58,5 +61,6 @@ class LoopState:
                 iteration=data.get("iteration", 0),
                 results=data.get("results", []),
             )
-        except (json.JSONDecodeError, KeyError, TypeError, OSError):
+        except (json.JSONDecodeError, KeyError, TypeError, OSError) as exc:
+            logger.warning("state] Failed to load %s: %s", STATE_FILE, exc)
             return None

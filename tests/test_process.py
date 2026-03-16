@@ -35,7 +35,14 @@ class TestRequireTools:
 
         assert exc_info.value.code == 1
 
-    def test_checks_for_git_claude_and_gh(self):
+    @pytest.mark.parametrize(
+        ("ci_tool", "expected"),
+        [
+            ("gh", ["git", "claude", "gh"]),
+            ("glab", ["git", "claude", "glab"]),
+        ],
+    )
+    def test_checks_for_expected_tools(self, ci_tool, expected):
         calls = []
 
         def tracking_which(tool):
@@ -43,13 +50,27 @@ class TestRequireTools:
             return f"/usr/bin/{tool}"
 
         with patch("improve.process.shutil.which", side_effect=tracking_which):
-            require_tools()
+            require_tools(ci_tool=ci_tool)
 
-        assert calls == ["git", "claude", "gh"]
+        assert calls == expected
 
     def test_passes_when_all_tools_found(self):
         with patch("improve.process.shutil.which", return_value="/usr/bin/git"):
             require_tools()
+
+    def test_raises_system_exit_when_glab_missing(self):
+        def selective_which(tool):
+            if tool == "glab":
+                return None
+            return f"/usr/bin/{tool}"
+
+        with (
+            patch("improve.process.shutil.which", side_effect=selective_which),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            require_tools(ci_tool="glab")
+
+        assert exc_info.value.code == 1
 
 
 class TestFormatDuration:

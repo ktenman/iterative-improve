@@ -48,7 +48,7 @@ class IterationLoop:
         claude.terminate_active()
         try:
             self.state.save()
-        except OSError:
+        except Exception:
             logger.warning("signal] Failed to save state during shutdown")
         elapsed = time.monotonic() - self.loop_start if self.loop_start else 0
         try:

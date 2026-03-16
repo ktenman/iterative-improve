@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 
 from improve import ci, git
+from improve.ci_gitlab import GitLabCI
 from improve.loop import IterationLoop
 from improve.process import require_tools
 from improve.prompt import AVAILABLE_PHASES
@@ -63,6 +64,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Squash all branch commits into one after finishing",
     )
+    parser.add_argument(
+        "--ci-provider",
+        choices=["github", "gitlab"],
+        default=None,
+        help="CI provider (default: auto-detect from git remote)",
+    )
     return parser.parse_args()
 
 
@@ -86,7 +93,11 @@ def main() -> None:
     args = _parse_args()
     _setup_logging()
     threading.Thread(target=check_for_update, daemon=True).start()
-    require_tools()
+    platform = args.ci_provider or git.detect_platform()
+    if platform == "gitlab":
+        ci.set_provider(GitLabCI())
+    ci_tool = "glab" if platform == "gitlab" else "gh"
+    require_tools(ci_tool)
 
     if args.iterations < 1:
         logger.error("loop] Iterations must be at least 1")
@@ -98,8 +109,15 @@ def main() -> None:
     phases = _validate_phases(args.phases)
 
     current_branch = git.branch()
+    if not current_branch:
+        logger.error("loop] Not on a branch (detached HEAD?), switch to a feature branch")
+        sys.exit(1)
     if current_branch in ("main", "master"):
         logger.error("loop] Cannot run on main/master, switch to a feature branch")
+        sys.exit(1)
+
+    if not git.resolve_existing_conflicts():
+        logger.error("loop] Unresolved merge conflicts — please resolve manually and retry")
         sys.exit(1)
 
     start_iteration = 1

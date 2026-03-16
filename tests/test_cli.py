@@ -18,6 +18,7 @@ class TestParseArgs:
         assert "simplify" in args.phases
         assert "security" in args.phases
         assert args.squash is False
+        assert args.ci_provider is None
 
     def test_parses_all_custom_values(self, monkeypatch):
         monkeypatch.setattr(
@@ -45,6 +46,12 @@ class TestParseArgs:
         assert args.phases == "simplify,security"
         assert args.squash is True
 
+    @pytest.mark.parametrize("provider", ["github", "gitlab"])
+    def test_parses_ci_provider(self, monkeypatch, provider):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "--ci-provider", provider])
+        args = _parse_args()
+        assert args.ci_provider == provider
+
 
 class TestValidatePhases:
     def test_returns_valid_phases(self):
@@ -67,27 +74,15 @@ class TestValidatePhases:
 
 
 class TestMain:
-    def test_exits_with_code_1_when_on_main_branch(self, monkeypatch):
+    @pytest.mark.parametrize("branch_name", ["main", "master"])
+    def test_exits_with_code_1_when_on_protected_branch(self, monkeypatch, branch_name):
         monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1"])
         with (
             patch("improve.cli._setup_logging"),
             patch("improve.cli.check_for_update"),
             patch("improve.cli.require_tools"),
             patch("improve.cli.ci"),
-            patch("improve.git.branch", return_value="main"),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            main()
-        assert exc_info.value.code == 1
-
-    def test_exits_with_code_1_when_on_master_branch(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1"])
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            patch("improve.cli.ci"),
-            patch("improve.git.branch", return_value="master"),
+            patch("improve.git.branch", return_value=branch_name),
             pytest.raises(SystemExit) as exc_info,
         ):
             main()
@@ -102,6 +97,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.cli.ci"),
             patch("improve.git.branch", return_value="feature"),
+            patch("improve.git.resolve_existing_conflicts", return_value=True),
             patch("improve.state.LoopState.load", return_value=saved),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.loop.IterationLoop.run") as mock_run,
@@ -118,6 +114,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.cli.ci"),
             patch("improve.git.branch", return_value="feature"),
+            patch("improve.git.resolve_existing_conflicts", return_value=True),
             patch("improve.state.LoopState.load", return_value=None),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.loop.IterationLoop.run") as mock_run,
@@ -126,8 +123,9 @@ class TestMain:
             main()
             mock_run.assert_called_once_with(1, 3)
 
-    def test_exits_with_code_1_when_iterations_is_zero(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "0"])
+    @pytest.mark.parametrize("n", ["0", "-3"])
+    def test_exits_with_code_1_when_iterations_below_minimum(self, monkeypatch, n):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", n])
         with (
             patch("improve.cli._setup_logging"),
             patch("improve.cli.check_for_update"),
@@ -137,30 +135,9 @@ class TestMain:
             main()
         assert exc_info.value.code == 1
 
-    def test_exits_with_code_1_when_iterations_is_negative(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "-3"])
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            main()
-        assert exc_info.value.code == 1
-
-    def test_exits_with_code_1_when_ci_timeout_is_zero(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", "0"])
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            main()
-        assert exc_info.value.code == 1
-
-    def test_exits_with_code_1_when_ci_timeout_is_negative(self, monkeypatch):
-        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", "-5"])
+    @pytest.mark.parametrize("timeout", ["0", "-5"])
+    def test_exits_with_code_1_when_ci_timeout_below_minimum(self, monkeypatch, timeout):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "-n", "1", "--ci-timeout", timeout])
         with (
             patch("improve.cli._setup_logging"),
             patch("improve.cli.check_for_update"),
@@ -178,6 +155,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.cli.ci"),
             patch("improve.git.branch", return_value="feature"),
+            patch("improve.git.resolve_existing_conflicts", return_value=True),
             patch("improve.git.sync_with_main", return_value=False),
             patch("improve.loop.IterationLoop.install_signal_handlers"),
             pytest.raises(SystemExit) as exc_info,

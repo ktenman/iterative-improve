@@ -15,13 +15,14 @@ NESTING_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
 ALLOWED_IMPORTS = {
     "cli": {
         "improve",
+        "improve.ci",
+        "improve.ci_gitlab",
+        "improve.git",
         "improve.loop",
         "improve.process",
         "improve.prompt",
         "improve.state",
         "improve.version",
-        "improve.ci",
-        "improve.git",
     },
     "loop": {
         "improve",
@@ -44,6 +45,7 @@ ALLOWED_IMPORTS = {
     },
     "claude": {"improve.process"},
     "ci": {"improve.process"},
+    "ci_gitlab": {"improve.process"},
     "git": {"improve.claude", "improve.process", "improve.prompt"},
     "process": set(),
     "prompt": set(),
@@ -51,9 +53,7 @@ ALLOWED_IMPORTS = {
     "version": set(),
 }
 
-ALLOWED_MUTABLE_GLOBALS = {
-    "ci": {"CI_RUN_TIMEOUT"},
-}
+ALLOWED_MUTABLE_GLOBALS = {}
 
 SECRET_PATTERNS = ["password", "secret", "api_key", "token", "private_key"]
 

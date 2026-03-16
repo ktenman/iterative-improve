@@ -39,6 +39,20 @@ class TestShutdown:
 
         assert exc_info.value.code == 130
 
+    def test_exits_gracefully_when_state_save_raises_non_os_error(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        loop.loop_start = 1.0
+
+        with (
+            patch("improve.claude.terminate_active"),
+            patch.object(loop.state, "save", side_effect=TypeError("not serializable")),
+            patch.object(loop, "print_summary"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            loop.shutdown(2, None)
+
+        assert exc_info.value.code == 130
+
     def test_calls_terminate_active_before_exiting(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
 

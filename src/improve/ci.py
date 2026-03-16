@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from typing import Protocol
 
 from improve.process import format_duration, run
 
@@ -17,35 +18,76 @@ MAX_CANCELLED_RETRIES = 3
 CI_WORKFLOW = "CI"
 
 
+class CIProvider(Protocol):
+    def get_latest_run_id(self, branch: str) -> int | None: ...
+    def get_run_conclusion(self, run_id: int) -> str | None: ...
+    def watch_run(self, run_id: int, timeout: int) -> bool: ...
+    def get_failed_logs(self, run_id: int) -> str: ...
+
+
+class GitHubCI:
+    def get_latest_run_id(self, branch: str) -> int | None:
+        result = run(
+            [
+                "gh",
+                "run",
+                "list",
+                "--branch",
+                branch,
+                "--workflow",
+                CI_WORKFLOW,
+                "--limit",
+                "1",
+                "--json",
+                "databaseId",
+            ]
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            runs = json.loads(result.stdout)
+            return runs[0]["databaseId"] if runs else None
+        except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
+            logger.debug("ci] Failed to parse run list: %s", exc)
+            return None
+
+    def get_run_conclusion(self, run_id: int) -> str | None:
+        result = run(["gh", "run", "view", str(run_id), "--json", "conclusion"])
+        if result.returncode != 0:
+            return None
+        try:
+            return json.loads(result.stdout).get("conclusion")
+        except (json.JSONDecodeError, AttributeError) as exc:
+            logger.debug("ci] Failed to parse run conclusion: %s", exc)
+            return None
+
+    def watch_run(self, run_id: int, timeout: int) -> bool:
+        result = run(
+            ["gh", "run", "watch", str(run_id), "--exit-status"],
+            timeout=timeout,
+        )
+        return result.returncode == 0
+
+    def get_failed_logs(self, run_id: int) -> str:
+        logs = run(["gh", "run", "view", str(run_id), "--log-failed"], timeout=60)
+        return logs.stdout[-4000:] if logs.stdout else "No logs available"
+
+
+_provider: CIProvider = GitHubCI()
+
+
+def set_provider(provider: CIProvider) -> None:
+    global _provider
+    _provider = provider
+
+
 def set_timeout(minutes: int) -> None:
     global CI_RUN_TIMEOUT
     CI_RUN_TIMEOUT = minutes * 60
 
 
 def get_latest_run_id(branch: str) -> int | None:
-    result = run(
-        [
-            "gh",
-            "run",
-            "list",
-            "--branch",
-            branch,
-            "--workflow",
-            CI_WORKFLOW,
-            "--limit",
-            "1",
-            "--json",
-            "databaseId",
-        ]
-    )
-    if result.returncode != 0:
-        return None
-    try:
-        runs = json.loads(result.stdout)
-        return runs[0]["databaseId"] if runs else None
-    except (json.JSONDecodeError, KeyError, IndexError, TypeError):
-        logger.warning("ci] Failed to parse CI run list output")
-        return None
+    return _provider.get_latest_run_id(branch)
 
 
 def _wait_for_new_run(branch: str, previous_id: int | None) -> int | None:
@@ -65,25 +107,6 @@ def _wait_for_new_run(branch: str, previous_id: int | None) -> int | None:
     return None
 
 
-def _get_run_conclusion(run_id: int) -> str | None:
-    result = run(["gh", "run", "view", str(run_id), "--json", "conclusion"])
-    if result.returncode != 0:
-        return None
-    try:
-        return json.loads(result.stdout).get("conclusion")
-    except (json.JSONDecodeError, AttributeError):
-        logger.warning("ci] Failed to parse CI run conclusion for run #%d", run_id)
-        return None
-
-
-def _watch_run(run_id: int) -> bool:
-    result = run(
-        ["gh", "run", "watch", str(run_id), "--exit-status"],
-        timeout=CI_RUN_TIMEOUT,
-    )
-    return result.returncode == 0
-
-
 def wait_for_ci(
     branch: str,
     known_previous_id: int | None = None,
@@ -101,12 +124,13 @@ def wait_for_ci(
     cancelled_retries = 0
     while True:
         logger.info("ci] Watching run #%d...", run_id)
-        if _watch_run(run_id):
+        if _provider.watch_run(run_id, CI_RUN_TIMEOUT):
             elapsed = time.monotonic() - start
             logger.info("ci] Passed in %s", format_duration(elapsed))
             return True, "", elapsed
 
-        if cancelled_retries >= MAX_CANCELLED_RETRIES or _get_run_conclusion(run_id) != "cancelled":
+        conclusion = _provider.get_run_conclusion(run_id)
+        if cancelled_retries >= MAX_CANCELLED_RETRIES or conclusion != "cancelled":
             break
 
         logger.info("ci] Run #%d was cancelled, looking for newer run...", run_id)
@@ -118,5 +142,4 @@ def wait_for_ci(
 
     elapsed = time.monotonic() - start
     logger.warning("ci] Failed after %s — fetching error logs...", format_duration(elapsed))
-    logs = run(["gh", "run", "view", str(run_id), "--log-failed"], timeout=60)
-    return False, (logs.stdout[-4000:] if logs.stdout else "No logs available"), elapsed
+    return False, _provider.get_failed_logs(run_id), elapsed
