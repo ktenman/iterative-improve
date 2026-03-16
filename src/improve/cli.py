@@ -9,6 +9,7 @@ from datetime import datetime
 from improve import ci, git
 from improve.ci_gitlab import GitLabCI
 from improve.loop import IterationLoop
+from improve.preflight import run_preflight
 from improve.process import require_tools
 from improve.prompt import AVAILABLE_PHASES
 from improve.state import LOG_FILE, STATE_DIR, LoopState
@@ -119,6 +120,8 @@ def main() -> None:
     if not git.resolve_existing_conflicts():
         logger.error("loop] Unresolved merge conflicts — please resolve manually and retry")
         sys.exit(1)
+
+    run_preflight(current_branch, ci_tool, args.skip_ci)
 
     start_iteration = 1
     state = LoopState(branch=current_branch, started_at=datetime.now().isoformat())
