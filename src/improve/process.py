@@ -30,8 +30,8 @@ def format_duration(seconds: float) -> str:
     return f"{hours}h {minutes}m {secs}s"
 
 
-def require_tools() -> None:
-    missing = [tool for tool in ["git", "claude", "gh"] if not shutil.which(tool)]
+def require_tools(ci_tool: str = "gh") -> None:
+    missing = [tool for tool in ["git", "claude", ci_tool] if not shutil.which(tool)]
     if missing:
         logger.error("missing] Missing required tools: %s", ", ".join(missing))
         raise SystemExit(1)

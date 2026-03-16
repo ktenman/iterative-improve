@@ -1,5 +1,7 @@
 from unittest.mock import patch
 
+import pytest
+
 from improve import git
 from tests import _cp
 
@@ -8,6 +10,27 @@ class TestBranch:
     def test_returns_current_branch_name(self):
         with patch("improve.git.run", return_value=_cp(stdout="feature-x\n")):
             assert git.branch() == "feature-x"
+
+
+class TestDetectPlatform:
+    @pytest.mark.parametrize(
+        ("url", "expected"),
+        [
+            ("https://github.com/user/repo.git", "github"),
+            ("git@github.com:user/repo.git", "github"),
+            ("https://gitlab.com/user/repo.git", "gitlab"),
+            ("git@gitlab.com:user/repo.git", "gitlab"),
+            ("https://gitlab.mycompany.com/repo.git", "gitlab"),
+            ("https://bitbucket.org/user/repo", "github"),
+        ],
+    )
+    def test_detects_platform_from_remote_url(self, url, expected):
+        with patch("improve.git.run", return_value=_cp(stdout=f"{url}\n")):
+            assert git.detect_platform() == expected
+
+    def test_defaults_to_github_when_remote_fails(self):
+        with patch("improve.git.run", return_value=_cp(returncode=1)):
+            assert git.detect_platform() == "github"
 
 
 class TestHasChanges:
@@ -230,6 +253,41 @@ class TestResolveConflicts:
             result = git._resolve_conflicts("feature")
 
         assert result is False
+
+
+class TestResolveExistingConflicts:
+    def test_returns_true_when_no_conflicts_exist(self):
+        with patch("improve.git.conflict_files", return_value=[]):
+            assert git.resolve_existing_conflicts() is True
+
+    def test_resolves_conflicts_with_claude_and_commits(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value="Fixed"),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git.resolve_existing_conflicts() is True
+
+    def test_aborts_merge_when_claude_fails_to_resolve(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.has_conflicts", side_effect=[True, False]),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git.resolve_existing_conflicts() is True
+
+    def test_returns_false_when_abort_also_fails(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.has_conflicts", side_effect=[True, True]),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git.resolve_existing_conflicts() is False
 
 
 class TestCreateWorktree:

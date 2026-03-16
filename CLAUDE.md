@@ -53,7 +53,7 @@ All source is in `src/improve/`. Entry point: `improve.cli:main`.
 - External tools required at runtime: `git`, `claude` (Claude Code CLI), `gh` (GitHub CLI)
 - State persists to `.improve-loop/` directory (state.json + run.log)
 - Three phases available: `simplify`, `review`, `security` — configurable via `--phases`
-- Claude subprocess timeout: 600s. CI run timeout: configurable via `--ci-timeout` (default 15 min)
+- Claude subprocess timeout: 900s. CI run timeout: configurable via `--ci-timeout` (default 15 min)
 - CI fix retries capped at 5 attempts per phase
 - `--batch` and `--parallel` are mutually exclusive (argparse enforced)
 - `--parallel` runs all phases concurrently in git worktrees, merges changes, single commit+push

@@ -15,6 +15,16 @@ def branch() -> str:
     return run(["git", "branch", "--show-current"]).stdout.strip()
 
 
+def detect_platform() -> str:
+    result = run(["git", "remote", "get-url", "origin"])
+    if result.returncode != 0:
+        return "github"
+    url = result.stdout.strip().lower()
+    if "gitlab" in url:
+        return "gitlab"
+    return "github"
+
+
 def has_changes() -> bool:
     return bool(run(["git", "status", "--porcelain", "--no-renames"]).stdout.strip())
 
@@ -95,6 +105,14 @@ def sync_with_main(branch_name: str) -> bool:
     return _resolve_conflicts(branch_name)
 
 
+def _commit_resolution(output: str) -> bool:
+    stage_tracked_changes()
+    if run(["git", "commit", "--no-edit"]).returncode == 0:
+        return True
+    summary = extract_summary(output)
+    return run(["git", "commit", "-m", f"Resolve merge conflicts: {summary[:40]}"]).returncode == 0
+
+
 def _resolve_conflicts(branch_name: str) -> bool:
     conflicts = conflict_files()
     logger.warning(
@@ -111,12 +129,7 @@ def _resolve_conflicts(branch_name: str) -> bool:
         run(["git", "merge", "--abort"])
         return False
 
-    stage_tracked_changes()
-    summary = extract_summary(output)
-    commit = run(["git", "commit", "--no-edit"])
-    if commit.returncode != 0:
-        commit = run(["git", "commit", "-m", f"Resolve merge conflicts: {summary[:40]}"])
-    if commit.returncode != 0:
+    if not _commit_resolution(output):
         logger.error("sync] Failed to commit merge resolution")
         run(["git", "merge", "--abort"])
         return False
@@ -127,6 +140,37 @@ def _resolve_conflicts(branch_name: str) -> bool:
         return False
 
     logger.info("sync] Conflicts resolved and pushed")
+    return True
+
+
+def resolve_existing_conflicts() -> bool:
+    conflicts = conflict_files()
+    if not conflicts:
+        return True
+    logger.warning(
+        "git] Found %d file(s) with unresolved merge conflicts: %s",
+        len(conflicts),
+        ", ".join(conflicts[:5]),
+    )
+
+    logger.info("git] Asking Claude to resolve pre-existing conflicts...")
+    output, _ = run_claude(build_conflict_prompt(conflicts))
+
+    if has_conflicts():
+        logger.warning("git] Auto-resolution failed, aborting merge to restore clean state...")
+        run(["git", "merge", "--abort"])
+        if has_conflicts():
+            logger.error("git] Could not abort merge — manual resolution required")
+            return False
+        logger.info("git] Merge aborted, working tree restored")
+        return True
+
+    if not _commit_resolution(output):
+        logger.error("git] Failed to commit conflict resolution")
+        run(["git", "merge", "--abort"])
+        return False
+
+    logger.info("git] Pre-existing conflicts resolved and committed")
     return True
 
 

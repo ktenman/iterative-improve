@@ -13,7 +13,7 @@ from improve.process import format_duration
 
 logger = logging.getLogger("improve")
 
-CLAUDE_TIMEOUT = 600
+CLAUDE_TIMEOUT = 900
 
 _active_processes: set[subprocess.Popen] = set()
 _process_lock = threading.RLock()
@@ -168,22 +168,25 @@ def run_claude(prompt: str, cwd: str | None = None, quiet: bool = False) -> tupl
     stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
     stderr_thread.start()
 
+    result_text = ""
+    has_streamed = False
     try:
         result_text, has_streamed = _parse_stream(process.stdout, quiet=quiet)
     finally:
         timer.cancel()
+        if has_streamed:
+            with contextlib.suppress(OSError):
+                sys.stdout.write("\n")
+        stderr_thread.join(timeout=5)
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.warning("claude] Process did not exit, terminating")
+            _terminate_process(process)
         with _process_lock:
             _active_processes.discard(process)
 
-    if has_streamed:
-        sys.stdout.write("\n")
-    stderr_thread.join(timeout=5)
     stderr = "".join(stderr_lines)
-    try:
-        process.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        logger.warning("claude] Process did not exit, terminating")
-        _terminate_process(process)
     elapsed = time.monotonic() - start
 
     if process.returncode != 0 and stderr:
