@@ -18,6 +18,7 @@ ALLOWED_IMPORTS = {
         "improve.ci",
         "improve.ci_gitlab",
         "improve.claude",
+        "improve.color",
         "improve.git",
         "improve.loop",
         "improve.preflight",
@@ -26,10 +27,12 @@ ALLOWED_IMPORTS = {
         "improve.state",
         "improve.version",
     },
+    "color": set(),
     "loop": {
         "improve",
         "improve.ci",
         "improve.claude",
+        "improve.color",
         "improve.git",
         "improve.parallel",
         "improve.process",
@@ -52,11 +55,11 @@ ALLOWED_IMPORTS = {
     "preflight": {"improve.process"},
     "process": set(),
     "prompt": set(),
-    "state": {"improve.process"},
+    "state": {"improve", "improve.process"},
     "version": set(),
 }
 
-ALLOWED_MUTABLE_GLOBALS = {}
+ALLOWED_MUTABLE_GLOBALS = {"color": {"enabled"}}
 
 SECRET_PATTERNS = ["password", "secret", "api_key", "token", "private_key"]
 

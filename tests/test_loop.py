@@ -734,6 +734,9 @@ class TestContinuousMode:
 
 class TestPrintSummaryReverted:
     def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch, capsys):
+        from improve import color
+
+        color.enabled = False
         loop = _make_loop(tmp_path, monkeypatch)
         result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
         loop.state.add(result)
