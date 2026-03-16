@@ -47,7 +47,9 @@ def init(force_no_color: bool = False) -> None:
 
 
 def wrap(text: str, code: str) -> str:
-    return f"{code}{text}{RESET}" if enabled else text
+    if not enabled or not code:
+        return text
+    return f"{code}{text}{RESET}"
 
 
 def phase_color(phase: str) -> str:
@@ -63,8 +65,7 @@ def status_mark(passed: bool, changed: bool, reverted: bool = False) -> str:
 
 
 def separator() -> str:
-    line = "=" * BOX_WIDTH
-    return wrap(line, BOLD + CYAN)
+    return wrap("=" * BOX_WIDTH, BOLD + CYAN)
 
 
 def section_title(title: str) -> str:

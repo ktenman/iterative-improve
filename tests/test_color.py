@@ -47,6 +47,10 @@ class TestWrap:
         color.enabled = False
         assert color.wrap("hello", color.RED) == "hello"
 
+    def test_returns_plain_text_when_code_is_empty(self):
+        color.enabled = True
+        assert color.wrap("hello", "") == "hello"
+
     def test_wraps_text_with_ansi_codes_when_enabled(self):
         color.enabled = True
         result = color.wrap("hello", color.RED)
