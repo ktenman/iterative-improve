@@ -20,25 +20,25 @@ _STATUS_MAP = {
 
 class GitLabCI:
     def get_latest_run_id(self, branch: str) -> int | None:
-        result = run(["glab", "ci", "list", "--branch", branch, "--per-page", "1", "-o", "json"])
+        result = run(["glab", "ci", "list", "--ref", branch, "--per-page", "1", "-F", "json"])
         if result.returncode != 0:
             return None
         try:
             pipelines = json.loads(result.stdout)
             return pipelines[0]["id"] if pipelines else None
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-            logger.debug("ci-gitlab] Failed to parse pipeline list: %s", exc)
+            logger.debug("[ci-gitlab] Failed to parse pipeline list: %s", exc)
             return None
 
     def get_run_conclusion(self, run_id: int) -> str | None:
-        result = run(["glab", "ci", "view", str(run_id), "-o", "json"])
+        result = run(["glab", "ci", "get", "-p", str(run_id), "-F", "json"])
         if result.returncode != 0:
             return None
         try:
             status = json.loads(result.stdout).get("status")
             return _STATUS_MAP.get(status)
-        except (json.JSONDecodeError, AttributeError) as exc:
-            logger.debug("ci-gitlab] Failed to parse pipeline status: %s", exc)
+        except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+            logger.debug("[ci-gitlab] Failed to parse pipeline status: %s", exc)
             return None
 
     def watch_run(self, run_id: int, timeout: int) -> bool:
@@ -50,9 +50,33 @@ class GitLabCI:
             if conclusion is not None:
                 return False
             time.sleep(POLL_INTERVAL)
-        logger.warning("ci-gitlab] Pipeline %d timed out after %ds", run_id, timeout)
+        logger.warning("[ci-gitlab] Pipeline %d timed out after %ds", run_id, timeout)
         return False
 
     def get_failed_logs(self, run_id: int) -> str:
-        result = run(["glab", "ci", "view", str(run_id), "--log"], timeout=60)
-        return result.stdout[-4000:] if result.stdout else "No logs available"
+        detail = run(["glab", "ci", "get", "-p", str(run_id), "-d", "-F", "json"], timeout=60)
+        if detail.returncode != 0 or not detail.stdout:
+            return "No logs available"
+
+        failed_job_ids = self._extract_failed_job_ids(detail.stdout)
+        if not failed_job_ids:
+            return "No failed jobs found"
+
+        logs: list[str] = []
+        for job_id in failed_job_ids:
+            trace = run(["glab", "ci", "trace", str(job_id)], timeout=60)
+            if trace.returncode == 0 and trace.stdout:
+                logs.append(trace.stdout)
+
+        combined = "\n".join(logs) if logs else "No logs available"
+        return combined[-4000:]
+
+    @staticmethod
+    def _extract_failed_job_ids(stdout: str) -> list[int]:
+        try:
+            data = json.loads(stdout)
+            jobs = data.get("jobs", [])
+            return [j["id"] for j in jobs if j.get("status") == "failed"]
+        except (json.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+            logger.debug("[ci-gitlab] Failed to extract failed job IDs: %s", exc)
+            return []
