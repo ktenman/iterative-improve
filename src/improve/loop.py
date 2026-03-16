@@ -284,14 +284,13 @@ class IterationLoop:
                 logger.error("loop] Merge conflict could not be resolved, stopping")
                 break
 
-            runner = (
-                self.run_parallel_batch_iteration
-                if self.parallel
-                else self.run_batch_iteration
-                if self.batch
-                else self.run_sequential_iteration
-            )
-            if not runner(i):
+            if self.parallel:
+                keep_going = self.run_parallel_batch_iteration(i)
+            elif self.batch:
+                keep_going = self.run_batch_iteration(i)
+            else:
+                keep_going = self.run_sequential_iteration(i)
+            if not keep_going:
                 break
 
         total = time.monotonic() - self.loop_start
