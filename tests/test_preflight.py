@@ -28,11 +28,6 @@ class TestCheckGitPush:
                 ["git", "push", "--dry-run", "origin", "feature-x"], timeout=15
             )
 
-    def test_includes_branch_name_in_command(self):
-        with patch("improve.preflight.run", return_value=_cp()) as mock_run:
-            preflight._check_git_push("my-branch")
-            assert mock_run.call_args[0][0][4] == "my-branch"
-
     def test_exits_when_push_is_denied(self):
         with (
             patch("improve.preflight.run", return_value=_cp(returncode=1)),

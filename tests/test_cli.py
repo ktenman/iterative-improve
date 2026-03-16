@@ -158,6 +158,7 @@ class TestMain:
             patch("improve.cli.ci"),
             patch("improve.git.branch", return_value="feature"),
             patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=False),
             patch("improve.loop.IterationLoop.install_signal_handlers"),
             pytest.raises(SystemExit) as exc_info,
