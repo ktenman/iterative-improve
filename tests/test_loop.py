@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from improve import color
 from improve.loop import MAX_CI_RETRIES, IterationLoop
 from improve.prompt import AVAILABLE_PHASES
 from improve.state import LoopState, PhaseResult
@@ -734,8 +735,6 @@ class TestContinuousMode:
 
 class TestPrintSummaryReverted:
     def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch, capsys):
-        from improve import color
-
         color.enabled = False
         loop = _make_loop(tmp_path, monkeypatch)
         result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)

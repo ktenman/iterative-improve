@@ -61,7 +61,9 @@ def status_mark(passed: bool, changed: bool, reverted: bool = False) -> str:
         return wrap("\u21ba", YELLOW)
     if not changed:
         return wrap("\u00b7", DIM)
-    return wrap("\u2713", GREEN) if passed else wrap("\u2717", RED)
+    if passed:
+        return wrap("\u2713", GREEN)
+    return wrap("\u2717", RED)
 
 
 def separator() -> str:
