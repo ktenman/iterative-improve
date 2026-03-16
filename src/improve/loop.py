@@ -276,6 +276,7 @@ class IterationLoop:
             label = str(i) if self.continuous else f"{i}/{max_iterations}"
             sep = color.separator()
             print(f"\n{sep}\n  {color.section_title(f'Iteration {label}')}\n{sep}")
+            logger.info("loop] === Iteration %s ===", label)
             self.state.iteration = i
             self.state.save()
 

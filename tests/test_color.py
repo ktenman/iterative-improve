@@ -15,6 +15,12 @@ class TestInit:
         color.init()
         assert color.enabled is False
 
+    def test_disables_color_when_no_color_env_is_empty_string(self, monkeypatch):
+        monkeypatch.setenv("NO_COLOR", "")
+        monkeypatch.delenv("TERM", raising=False)
+        color.init()
+        assert color.enabled is False
+
     def test_disables_color_when_term_is_dumb(self, monkeypatch):
         monkeypatch.delenv("NO_COLOR", raising=False)
         monkeypatch.setenv("TERM", "dumb")

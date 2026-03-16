@@ -104,7 +104,9 @@ class LoopState:
 def _ci_label(r: dict) -> str:
     if r.get("reverted"):
         return color.wrap("REVT", color.DARK_YELLOW)
-    return color.wrap("PASS", color.DARK_GREEN) if r["ci_passed"] else color.wrap("FAIL", color.RED)
+    if r["ci_passed"]:
+        return color.wrap("PASS", color.DARK_GREEN)
+    return color.wrap("FAIL", color.RED)
 
 
 def format_summary(results: list[dict], total_elapsed: float) -> str:

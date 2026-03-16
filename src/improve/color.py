@@ -40,7 +40,7 @@ BOX_WIDTH = 56
 
 def init(force_no_color: bool = False) -> None:
     global enabled
-    if force_no_color or os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+    if force_no_color or "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
         enabled = False
         return
     enabled = sys.stdout.isatty()
