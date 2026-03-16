@@ -6,7 +6,7 @@ import sys
 import time
 from dataclasses import replace
 
-from improve import ci, claude, git
+from improve import ci, claude, color, git
 from improve.parallel import run_parallel_batch
 from improve.process import format_duration
 from improve.prompt import (
@@ -274,8 +274,8 @@ class IterationLoop:
         self.loop_start = time.monotonic()
         for i in range(start_iteration, max_iterations + 1):
             label = str(i) if self.continuous else f"{i}/{max_iterations}"
-            print(f"\n--- Iteration {label} ---")
-            logger.info("loop] === Iteration %s ===", label)
+            sep = color.separator()
+            print(f"\n{sep}\n  {color.section_title(f'Iteration {label}')}\n{sep}")
             self.state.iteration = i
             self.state.save()
 

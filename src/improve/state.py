@@ -5,6 +5,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from improve import color
 from improve.process import format_duration
 
 logger = logging.getLogger("improve")
@@ -102,33 +103,34 @@ class LoopState:
 
 def _ci_label(r: dict) -> str:
     if r.get("reverted"):
-        return "REVT"
-    return "PASS" if r["ci_passed"] else "FAIL"
+        return color.wrap("REVT", color.YELLOW)
+    return color.wrap("PASS", color.GREEN) if r["ci_passed"] else color.wrap("FAIL", color.RED)
 
 
 def format_summary(results: list[dict], total_elapsed: float) -> str:
     total_claude = sum(r.get("claude_seconds", 0) for r in results)
     total_ci = sum(r.get("ci_seconds", 0) for r in results)
     overhead = format_duration(max(0, total_elapsed - total_claude - total_ci))
+    banner = color.separator()
     lines = [
-        f"\n{'=' * 60}",
-        "RESULTS",
-        f"{'=' * 60}",
+        f"\n{banner}",
+        color.section_title("Results"),
+        banner,
         f"  Phases run:     {len(results)}",
         f"  With changes:   {sum(1 for r in results if r['changes_made'])}",
         f"  CI fixes:       {sum(r['ci_retries'] for r in results)}",
         f"  Reverted:       {sum(1 for r in results if r.get('reverted'))}",
-        f"  Total time:     {format_duration(total_elapsed)}",
-        f"  Claude time:    {format_duration(total_claude)}",
-        f"  CI time:        {format_duration(total_ci)}",
-        f"  Overhead:       {overhead}",
+        f"  Total time:     {color.wrap(format_duration(total_elapsed), color.DIM)}",
+        f"  Claude time:    {color.wrap(format_duration(total_claude), color.DIM)}",
+        f"  CI time:        {color.wrap(format_duration(total_ci), color.DIM)}",
+        f"  Overhead:       {color.wrap(overhead, color.DIM)}",
         "",
     ]
     for r in results:
-        marker = "+" if r["changes_made"] else " "
-        dur = format_duration(r.get("duration_seconds", 0))
-        lines.append(
-            f"  [{marker}] {r['phase']:10s} | CI:{_ci_label(r)} | {dur:>9s} | {r['summary']}"
-        )
+        mark = color.status_mark(r["ci_passed"], r["changes_made"], r.get("reverted", False))
+        phase_name = color.wrap(f"{r['phase']:10s}", color.phase_color(r["phase"]))
+        dur = color.wrap(f"{format_duration(r.get('duration_seconds', 0)):>9s}", color.DIM)
+        ci_label = _ci_label(r)
+        lines.append(f"  {mark} {phase_name}  {ci_label}  {dur}  {r['summary']}")
     lines.extend([f"\n  State: {STATE_FILE}", f"  Log:   {LOG_FILE}"])
     return "\n".join(lines)
