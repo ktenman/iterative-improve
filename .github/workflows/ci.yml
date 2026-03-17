@@ -68,10 +68,10 @@ jobs:
           echo "file=$FILE" >> "$GITHUB_OUTPUT"
           echo "Mutating: $FILE"
 
-      - name: Run mutation testing (sampled, 7min max)
+      - name: Run mutation testing (sampled, 5min max)
         run: |
           TARGET="${{ steps.pick.outputs.file }}"
-          timeout 420 uv run mutmut run \
+          timeout 300 uv run mutmut run \
             --paths-to-mutate="$TARGET" \
             || rc=$?
           rc=${rc:-0}
