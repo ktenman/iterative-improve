@@ -89,6 +89,8 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
         except json.JSONDecodeError:
             logger.debug("claude] unparseable line")
             continue
+        if not isinstance(event, dict):
+            continue
 
         event_type = event.get("type", "")
         if event_type == "result":

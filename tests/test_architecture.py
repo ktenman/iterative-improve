@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-SRC_DIR = Path("src/improve")
+SRC_DIR = Path("improve")
 TEST_DIR = Path("tests")
 SOURCE_FILES = sorted(SRC_DIR.glob("*.py"))
 TEST_FILES = sorted(TEST_DIR.glob("test_*.py"))
@@ -16,19 +16,18 @@ ALLOWED_IMPORTS = {
     "cli": {
         "improve",
         "improve.ci",
-        "improve.ci_gitlab",
+        "improve.ci_glab",
         "improve.claude",
         "improve.color",
         "improve.git",
-        "improve.loop",
-        "improve.preflight",
+        "improve.runner",
         "improve.process",
-        "improve.prompt",
+        "improve.phases",
         "improve.state",
         "improve.version",
     },
     "color": set(),
-    "loop": {
+    "runner": {
         "improve",
         "improve.ci",
         "improve.claude",
@@ -36,7 +35,7 @@ ALLOWED_IMPORTS = {
         "improve.git",
         "improve.parallel",
         "improve.process",
-        "improve.prompt",
+        "improve.phases",
         "improve.state",
     },
     "parallel": {
@@ -45,16 +44,16 @@ ALLOWED_IMPORTS = {
         "improve.claude",
         "improve.git",
         "improve.process",
-        "improve.prompt",
+        "improve.phases",
         "improve.state",
     },
     "claude": {"improve.process"},
-    "ci": {"improve.process"},
-    "ci_gitlab": {"improve.process"},
-    "git": {"improve.claude", "improve.process", "improve.prompt"},
-    "preflight": {"improve.process"},
+    "ci": {"improve.ci_gh", "improve.process"},
+    "ci_gh": {"improve.process"},
+    "ci_glab": {"improve.process"},
+    "git": {"improve.claude", "improve.process", "improve.phases"},
     "process": set(),
-    "prompt": set(),
+    "phases": set(),
     "state": {"improve", "improve.color", "improve.process"},
     "version": set(),
 }
@@ -113,8 +112,8 @@ class TestLayerBoundaries:
         assert not illegal, f"{module}.py imports {illegal} but only {allowed} are allowed"
 
     def test_lower_layers_never_import_upper_layers(self):
-        lower = {"process", "prompt", "state"}
-        upper = {"cli", "loop"}
+        lower = {"process", "phases", "state"}
+        upper = {"cli", "runner"}
 
         for path in SOURCE_FILES:
             module = path.stem
@@ -162,7 +161,7 @@ class TestCodeHygiene:
 
     @pytest.mark.parametrize("source_file", SOURCE_FILES, ids=lambda p: p.stem)
     def test_no_print_in_library_modules(self, source_file):
-        if source_file.stem in ("cli", "loop", "__init__"):
+        if source_file.stem in ("cli", "runner", "__init__"):
             return
 
         for node in ast.walk(_parse_module(source_file)):

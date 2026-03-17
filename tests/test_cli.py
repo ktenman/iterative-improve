@@ -108,8 +108,8 @@ class TestMain:
             patch("improve.cli.run_preflight"),
             patch("improve.state.LoopState.load", return_value=saved),
             patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.loop.IterationLoop.run") as mock_run,
-            patch("improve.loop.IterationLoop.install_signal_handlers"),
+            patch("improve.runner.IterationLoop.run") as mock_run,
+            patch("improve.runner.IterationLoop.install_signal_handlers"),
         ):
             main()
             mock_run.assert_called_once_with(3, 3)
@@ -126,8 +126,8 @@ class TestMain:
             patch("improve.cli.run_preflight"),
             patch("improve.state.LoopState.load", return_value=None),
             patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.loop.IterationLoop.run") as mock_run,
-            patch("improve.loop.IterationLoop.install_signal_handlers"),
+            patch("improve.runner.IterationLoop.run") as mock_run,
+            patch("improve.runner.IterationLoop.install_signal_handlers"),
         ):
             main()
             mock_run.assert_called_once_with(1, 3)
@@ -181,8 +181,8 @@ class TestMain:
             patch("improve.git.resolve_existing_conflicts", return_value=True),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.loop.IterationLoop.run") as mock_run,
-            patch("improve.loop.IterationLoop.install_signal_handlers"),
+            patch("improve.runner.IterationLoop.run") as mock_run,
+            patch("improve.runner.IterationLoop.install_signal_handlers"),
         ):
             main()
             mock_run.assert_called_once_with(1, 1000)
@@ -198,7 +198,7 @@ class TestMain:
             patch("improve.git.resolve_existing_conflicts", return_value=True),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=False),
-            patch("improve.loop.IterationLoop.install_signal_handlers"),
+            patch("improve.runner.IterationLoop.install_signal_handlers"),
             pytest.raises(SystemExit) as exc_info,
         ):
             main()

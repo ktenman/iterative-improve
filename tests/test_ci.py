@@ -3,13 +3,8 @@ from unittest.mock import patch
 import pytest
 
 from improve import ci
-from improve.ci import CIProvider, GitHubCI
+from improve.ci_gh import GitHubCI
 from tests import _cp
-
-
-@pytest.fixture()
-def provider():
-    return GitHubCI()
 
 
 class TestSetTimeout:
@@ -38,37 +33,47 @@ class TestSetProvider:
 
 class TestGetLatestRunId:
     def test_returns_run_id_from_gh_output(self):
-        with patch("improve.ci.run", return_value=_cp(stdout='[{"databaseId": 42}]')):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout='[{"databaseId": 42}]')):
             result = ci.get_latest_run_id("feature")
 
         assert result == 42
 
     def test_returns_none_when_no_runs(self):
-        with patch("improve.ci.run", return_value=_cp(stdout="[]")):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="[]")):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
 
     def test_returns_none_on_command_failure(self):
-        with patch("improve.ci.run", return_value=_cp(returncode=1, stderr="error")):
+        with patch("improve.ci_gh.run", return_value=_cp(returncode=1, stderr="error")):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
 
     def test_returns_none_on_malformed_json_output(self):
-        with patch("improve.ci.run", return_value=_cp(stdout="not valid json")):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="not valid json")):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
 
     def test_returns_none_when_json_has_unexpected_structure(self):
-        with patch("improve.ci.run", return_value=_cp(stdout='{"error": "rate limited"}')):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout='{"error": "rate limited"}')):
             result = ci.get_latest_run_id("feature")
 
         assert result is None
 
 
 class TestWaitForCi:
+    def test_fetches_previous_id_when_not_provided(self):
+        with (
+            patch("improve.ci.get_latest_run_id", return_value=50) as mock_get,
+            patch("improve.ci._wait_for_new_run", return_value=None),
+        ):
+            passed, _errors, _elapsed = ci.wait_for_ci("feature")
+
+        assert passed is True
+        mock_get.assert_called_once_with("feature")
+
     def test_returns_pass_when_no_new_run_detected(self):
         with patch("improve.ci._wait_for_new_run", return_value=None):
             passed, errors, _elapsed = ci.wait_for_ci("feature", known_previous_id=100)
@@ -163,53 +168,3 @@ class TestWaitForNewRun:
             result = ci._wait_for_new_run("feature", 100)
 
         assert result == 200
-
-
-class TestGitHubCI:
-    def test_satisfies_ci_provider_protocol(self, provider):
-        typed: CIProvider = provider
-        assert isinstance(typed, GitHubCI)
-
-    def test_get_latest_run_id_parses_database_id(self, provider):
-        with patch("improve.ci.run", return_value=_cp(stdout='[{"databaseId": 99}]')):
-            assert provider.get_latest_run_id("main") == 99
-
-    def test_get_run_conclusion_returns_conclusion_field(self, provider):
-        with patch("improve.ci.run", return_value=_cp(stdout='{"conclusion": "failure"}')):
-            assert provider.get_run_conclusion(42) == "failure"
-
-    def test_get_run_conclusion_returns_none_on_command_failure(self, provider):
-        with patch("improve.ci.run", return_value=_cp(returncode=1)):
-            assert provider.get_run_conclusion(42) is None
-
-    def test_get_run_conclusion_returns_none_on_malformed_json(self, provider):
-        with patch("improve.ci.run", return_value=_cp(stdout="not json")):
-            assert provider.get_run_conclusion(42) is None
-
-    @pytest.mark.parametrize(
-        ("returncode", "expected"),
-        [(0, True), (1, False)],
-    )
-    def test_watch_run_returns_expected_result(self, provider, returncode, expected):
-        with patch("improve.ci.run", return_value=_cp(returncode=returncode)):
-            assert provider.watch_run(200, 900) is expected
-
-    def test_watch_run_passes_timeout_to_subprocess(self, provider):
-        with patch("improve.ci.run", return_value=_cp()) as mock_run:
-            provider.watch_run(42, 300)
-
-        mock_run.assert_called_once_with(
-            ["gh", "run", "watch", "42", "--exit-status"],
-            timeout=300,
-        )
-
-    def test_get_failed_logs_truncates_to_4000_chars(self, provider):
-        long_output = "x" * 5000
-        with patch("improve.ci.run", return_value=_cp(stdout=long_output)):
-            result = provider.get_failed_logs(42)
-
-        assert len(result) == 4000
-
-    def test_get_failed_logs_returns_fallback_when_empty(self, provider):
-        with patch("improve.ci.run", return_value=_cp(stdout="")):
-            assert provider.get_failed_logs(42) == "No logs available"

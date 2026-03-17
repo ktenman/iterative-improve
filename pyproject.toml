@@ -18,7 +18,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/improve"]
+packages = ["improve"]
 
 [tool.ruff]
 line-length = 100
@@ -39,9 +39,15 @@ select = [
 [tool.ruff.lint.isort]
 known-first-party = ["improve"]
 
+[tool.mutmut]
+paths_to_mutate = "improve/"
+tests_dir = "tests/"
+runner = "python -m pytest -x -q --tb=no"
+dict_synonyms = ""
+
 [tool.coverage.run]
 source = ["improve"]
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 80
+fail_under = 90

@@ -106,6 +106,60 @@ class TestLoopState:
         assert LoopState.load() is None
 
 
+class TestMarkRecentReverted:
+    def test_marks_only_changed_results_as_reverted(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
+        monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
+        state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")
+        state.add(PhaseResult(1, "simplify", True, ["a.py"], "Changed", True, 0))
+        state.add(PhaseResult(1, "review", False, [], "No changes", True, 0))
+
+        state.mark_recent_reverted(2)
+
+        assert state.results[0]["reverted"] is True
+        assert state.results[1].get("reverted") is not True
+
+    def test_only_affects_last_n_results(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
+        monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
+        state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")
+        state.add(PhaseResult(1, "simplify", True, ["a.py"], "First", True, 0))
+        state.add(PhaseResult(2, "simplify", True, ["b.py"], "Second", True, 0))
+        state.add(PhaseResult(3, "simplify", True, ["c.py"], "Third", True, 0))
+
+        state.mark_recent_reverted(1)
+
+        assert state.results[0].get("reverted") is not True
+        assert state.results[1].get("reverted") is not True
+        assert state.results[2]["reverted"] is True
+
+
+class TestKeptResults:
+    def test_excludes_no_change_results(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
+        monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
+        state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")
+        state.add(PhaseResult(1, "simplify", True, ["a.py"], "Changed", True, 0))
+        state.add(PhaseResult(1, "review", False, [], "No changes", True, 0))
+
+        kept = state.kept_results()
+
+        assert len(kept) == 1
+        assert kept[0]["summary"] == "Changed"
+
+    def test_excludes_reverted_results(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
+        monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
+        state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")
+        state.add(PhaseResult(1, "simplify", True, ["a.py"], "Changed", True, 0))
+        state.add(PhaseResult(1, "review", True, ["b.py"], "Reverted", False, 1, reverted=True))
+
+        kept = state.kept_results()
+
+        assert len(kept) == 1
+        assert kept[0]["summary"] == "Changed"
+
+
 class TestFormatSummary:
     @pytest.fixture(autouse=True)
     def _disable_color(self):
@@ -134,3 +188,37 @@ class TestFormatSummary:
 
         assert "Phases run:     0" in output
         assert "Reverted:       0" in output
+
+    def test_shows_fail_label_when_ci_failed_and_not_reverted(self):
+        result = PhaseResult(1, "review", True, ["a.py"], "Stuff", False, 0)
+        results = [asdict(result)]
+
+        output = format_summary(results, 5.0)
+
+        assert "FAIL" in output
+
+    def test_counts_ci_retries(self):
+        results = [
+            asdict(PhaseResult(1, "simplify", True, ["a.py"], "S1", True, 2)),
+            asdict(PhaseResult(1, "review", True, ["b.py"], "S2", True, 3)),
+        ]
+
+        output = format_summary(results, 10.0)
+
+        assert "CI fixes:       5" in output
+
+    def test_counts_phases_with_changes(self):
+        results = [
+            asdict(PhaseResult(1, "simplify", True, ["a.py"], "Changed", True, 0)),
+            asdict(PhaseResult(1, "review", False, [], "No changes", True, 0)),
+        ]
+
+        output = format_summary(results, 10.0)
+
+        assert "With changes:   1" in output
+
+    def test_shows_state_and_log_file_paths(self):
+        output = format_summary([], 0.0)
+
+        assert "State:" in output
+        assert "Log:" in output

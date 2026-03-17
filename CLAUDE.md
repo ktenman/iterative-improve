@@ -25,8 +25,8 @@ iterative-improve --revert-on-fail          # revert bad changes, keep going
 iterative-improve --phase-timeout 300       # Claude subprocess timeout (default: 900s)
 
 # Lint
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check improve/ tests/
+uv run ruff format --check improve/ tests/
 
 # Test with coverage
 uv run pytest -v --tb=short --cov=improve --cov-report=term-missing
@@ -36,16 +36,18 @@ uv run pytest -v --tb=short --cov=improve --cov-report=term-missing
 
 ## Architecture
 
-All source is in `src/improve/`. Entry point: `improve.cli:main`.
+All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 
 - **cli.py** — Argument parsing, logging setup, phase validation, entry point
-- **loop.py** — `IterationLoop` class: orchestration, signal handling (SIGINT/SIGTERM save state before exit), phase execution, batch/sequential/parallel iteration, squash, results summary
+- **runner.py** — `IterationLoop` class: orchestration, signal handling (SIGINT/SIGTERM save state before exit), phase execution, batch/sequential/parallel iteration, squash, results summary
 - **parallel.py** — Parallel phase execution using git worktrees and `ThreadPoolExecutor`; each phase runs `claude -p` in its own worktree, changes are merged back and committed as one
 - **claude.py** — Spawns `claude -p` as subprocess with `stream-json` output format, parses streaming events, tracks active processes (thread-safe) for graceful shutdown
-- **ci.py** — Polls GitHub Actions via `gh run list/watch`, waits for new CI runs by comparing run IDs, fetches failed logs with `gh run view --log-failed`
+- **ci.py** — CI orchestration: polls for new runs, waits for completion, handles cancellations and retries
+- **ci_gh.py** — GitHub Actions CI provider (`gh` CLI)
+- **ci_glab.py** — GitLab CI provider (`glab` CLI)
 - **git.py** — Git operations: diff vs main, commit+push, sync/merge with main, squash branch, conflict resolution, worktree management (create/remove/apply changes)
-- **process.py** — Thin `subprocess.run` wrapper, validates required external tools (`git`, `claude`, `gh`)
-- **prompt.py** — Defines available phases (simplify/review/security) and their focus areas; builds prompts for phases and CI fix attempts; extracts `SUMMARY:` lines from Claude output; generates commit messages with verb detection
+- **process.py** — Thin `subprocess.run` wrapper, validates required external tools, preflight checks
+- **phases.py** — Defines available phases (simplify/review/security) and their focus areas; builds prompts for phases, CI fixes, and squash commits; extracts `SUMMARY:` lines from Claude output; generates commit messages
 - **state.py** — `LoopState` and `PhaseResult` dataclasses, JSON persistence to `.improve-loop/state.json`
 - **version.py** — Checks GitHub releases for newer versions, runs in background thread at startup
 
@@ -84,8 +86,8 @@ All source is in `src/improve/`. Entry point: `improve.cli:main`.
 - f-strings for formatting
 - Use dataclasses for data structures
 - Guard clauses over nested conditionals
-- **Always run `uv run ruff check src/` and `uv run ruff format --check src/`** after making changes — fix all issues before committing
-- Auto-fix: `uv run ruff check --fix src/` and `uv run ruff format src/`
+- **Always run `uv run ruff check improve/` and `uv run ruff format --check improve/`** after making changes — fix all issues before committing
+- Auto-fix: `uv run ruff check --fix improve/` and `uv run ruff format improve/`
 
 ## Testing Standards
 

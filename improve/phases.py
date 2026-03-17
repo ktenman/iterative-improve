@@ -116,7 +116,6 @@ PHASE_COMMIT_PREFIX = {
 
 def build_phase_prompt(phase: str, branch_diff: str, context: str) -> str:
     role = PHASE_PROMPTS[phase]
-
     return (
         f"{role}\n\n"
         f"Files changed on this branch (vs main):\n{branch_diff}\n\n"
@@ -189,3 +188,36 @@ def build_commit_message(phase: str, summary: str) -> str:
         lowered = clean[0].lower() + clean[1:]
         message = f"{prefix} {lowered}"
     return _truncate(message)
+
+
+def strip_code_fences(text: str) -> str:
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        first_newline = stripped.find("\n")
+        if first_newline != -1:
+            stripped = stripped[first_newline + 1 :]
+    if stripped.endswith("```"):
+        stripped = stripped[:-3]
+    return stripped.strip()
+
+
+def build_squash_prompt(diff: str, kept_results: list[dict]) -> tuple[str, str]:
+    phases_used = sorted({r["phase"] for r in kept_results if r.get("phase")})
+    summaries = "\n".join(f"- [{r.get('phase', '?')}] {r['summary']}" for r in kept_results)
+    if len(kept_results) == 1:
+        fallback_subject = build_commit_message(phases_used[0], kept_results[0]["summary"])
+    else:
+        fallback_subject = f"Improve code ({', '.join(phases_used)})"
+    fallback = fallback_subject + "\n\n" + "\n".join(f"- {r['summary']}" for r in kept_results)
+    prompt = (
+        "Write a git commit message for squashing these changes into one commit.\n\n"
+        f"Phase summaries:\n{summaries}\n\n"
+        f"Full diff vs main:\n{diff[:8000]}\n\n"
+        "Rules:\n"
+        "- Subject line: max 50 chars, start with uppercase imperative verb\n"
+        "- No prefixes like feat:/fix:/chore:\n"
+        "- Add a blank line then a body with bullet points summarizing key changes\n"
+        "- Be specific about what changed, not generic\n"
+        "- Output ONLY the commit message, nothing else"
+    )
+    return prompt, fallback

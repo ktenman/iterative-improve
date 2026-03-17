@@ -4,9 +4,9 @@ from unittest.mock import patch
 import pytest
 
 from improve import color
-from improve.loop import MAX_CI_RETRIES, IterationLoop
-from improve.prompt import AVAILABLE_PHASES
-from improve.state import LoopState, PhaseResult
+from improve.phases import AVAILABLE_PHASES
+from improve.runner import MAX_CI_RETRIES, IterationLoop
+from improve.state import LoopState, PhaseResult, format_summary
 
 
 def _make_loop(
@@ -44,7 +44,7 @@ class TestShutdown:
 
         with (
             patch("improve.claude.terminate_active"),
-            patch.object(loop, "print_summary"),
+            patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
         ):
             loop.shutdown(2, None)
@@ -58,7 +58,7 @@ class TestShutdown:
         with (
             patch("improve.claude.terminate_active"),
             patch.object(loop.state, "save", side_effect=TypeError("not serializable")),
-            patch.object(loop, "print_summary"),
+            patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
         ):
             loop.shutdown(2, None)
@@ -70,7 +70,7 @@ class TestShutdown:
 
         with (
             patch("improve.claude.terminate_active") as mock_terminate,
-            patch.object(loop, "print_summary"),
+            patch("builtins.print"),
             pytest.raises(SystemExit),
         ):
             loop.shutdown(2, None)
@@ -233,6 +233,22 @@ class TestRunPhase:
         assert result.ci_passed is False
         mock_wait.assert_not_called()
 
+    def test_includes_ci_time_in_duration_log(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed bug", 1.0)),
+            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 5.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 0, 0.0, 0.0)),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert result.ci_seconds == 5.0
+
     def test_runs_security_phase(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
         with (
@@ -246,25 +262,23 @@ class TestRunPhase:
         assert result.phase == "security"
 
 
-class TestPrintSummary:
-    def test_prints_formatted_results(self, tmp_path, monkeypatch, capsys):
+class TestFormatSummaryIntegration:
+    def test_formats_results_with_phase_details(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
         loop.state.add(
             PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0, 10.0, 8.0, 2.0)
         )
 
-        loop.print_summary(15.0)
+        output = format_summary(loop.state.results, 15.0)
 
-        output = capsys.readouterr().out
         assert "Results" in output
         assert "Extracted helper" in output
 
-    def test_prints_empty_summary_when_no_phases_ran(self, tmp_path, monkeypatch, capsys):
+    def test_formats_empty_summary_when_no_phases_ran(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
 
-        loop.print_summary(0.0)
+        output = format_summary(loop.state.results, 0.0)
 
-        output = capsys.readouterr().out
         assert "Phases run:     0" in output
 
 
@@ -311,6 +325,29 @@ class TestRunBatchIteration:
 
         assert result is True
         mock_wait.assert_not_called()
+
+
+class TestRunBatchCIFailure:
+    def test_batch_stops_when_ci_fails_without_revert_flag(self, tmp_path, monkeypatch):
+        loop = _make_loop(
+            tmp_path,
+            monkeypatch,
+            batch=True,
+            skip_ci=False,
+            revert_on_fail=False,
+            phases=["simplify"],
+        )
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+
+        with (
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch.object(loop, "run_phase", return_value=changed),
+            patch("improve.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(False, 1, 1.0, 2.0)),
+        ):
+            result = loop.run_batch_iteration(1)
+
+        assert result is False
 
 
 class TestRunSequentialIteration:
@@ -371,6 +408,8 @@ class TestSquashBranch:
         with (
             patch("improve.git.squash_branch", return_value=True) as mock_squash,
             patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.git.diff_vs_main", return_value="diff"),
+            patch("improve.claude.run_claude", return_value=("", 0.0)),
             patch.object(loop, "run_sequential_iteration", return_value=False),
         ):
             loop.run(1, 1)
@@ -399,6 +438,8 @@ class TestSquashBranch:
         with (
             patch("improve.git.squash_branch", return_value=True) as mock_squash,
             patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.git.diff_vs_main", return_value="diff"),
+            patch("improve.claude.run_claude", return_value=("", 0.0)),
             patch.object(loop, "run_sequential_iteration", return_value=False),
         ):
             loop.run(1, 1)
@@ -620,12 +661,13 @@ class TestRevertOnFail:
         )
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
 
+        def fake_parallel_batch(**kwargs):
+            kwargs["add_result"](changed)
+            return True
+
         with (
             patch("improve.git.head_sha", return_value="abc123"),
-            patch(
-                "improve.loop.run_parallel_batch",
-                side_effect=lambda **kwargs: (kwargs["add_result"](changed), True)[1],
-            ),
+            patch("improve.runner.run_parallel_batch", side_effect=fake_parallel_batch),
         ):
             result = loop.run_parallel_batch_iteration(1)
 
@@ -658,6 +700,34 @@ class TestDropConvergedPhases:
 
         assert "simplify" not in loop._active_phases
         assert "review" in loop._active_phases
+
+
+class TestRunPhaseSafe:
+    def test_catches_exception_and_discards_changes(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, skip_ci=True, phases=["simplify"])
+
+        with (
+            patch.object(loop, "run_phase", side_effect=RuntimeError("boom")),
+            patch("improve.git.discard_changes") as mock_discard,
+        ):
+            result = loop._run_phase_safe("simplify", 1, True)
+
+        assert result.summary == "Phase crashed"
+        assert result.changes_made is False
+        mock_discard.assert_called_once()
+
+    def test_handles_discard_changes_also_raising(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch, skip_ci=True, phases=["simplify"])
+
+        with (
+            patch.object(loop, "run_phase", side_effect=RuntimeError("boom")),
+            patch("improve.git.discard_changes", side_effect=RuntimeError("double boom")),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            result = loop._run_phase_safe("simplify", 1, True)
+
+        assert result.summary == "Phase crashed"
+        assert "Failed to discard changes" in caplog.text
 
 
 class TestCrashRecovery:
@@ -733,15 +803,14 @@ class TestContinuousMode:
         assert "Iteration 1/5" in output
 
 
-class TestPrintSummaryReverted:
-    def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch, capsys):
+class TestFormatSummaryReverted:
+    def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch):
         color.enabled = False
         loop = _make_loop(tmp_path, monkeypatch)
         result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
         loop.state.add(result)
 
-        loop.print_summary(10.0)
+        output = format_summary(loop.state.results, 10.0)
 
-        output = capsys.readouterr().out
         assert "REVT" in output
         assert "Reverted:       1" in output

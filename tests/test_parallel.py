@@ -209,6 +209,35 @@ class TestRunParallelBatch:
         assert result is True
         mock_revert.assert_called_once_with("abc123", "feature")
 
+    def test_handles_oserror_when_applying_worktree_changes(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
+        add_result = MagicMock()
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch(
+                "improve.parallel.git.apply_worktree_changes",
+                side_effect=OSError("Permission denied"),
+            ),
+            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            result = run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                True,
+                add_result,
+                MagicMock(),
+            )
+
+        assert result is False
+        added = add_result.call_args[0][0]
+        assert added.changes_made is False
+
     def test_returns_false_when_push_fails(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
 
@@ -229,6 +258,91 @@ class TestRunParallelBatch:
                 True,
                 MagicMock(),
                 MagicMock(),
+            )
+
+        assert result is False
+
+    def test_uses_generic_message_when_multiple_phases_changed(self):
+        results = [
+            PhaseResult(1, "simplify", True, ["a.py"], "Simplified", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+        ]
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py\nb.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.git.apply_worktree_changes", side_effect=[["a.py"], ["b.py"]]),
+            patch("improve.parallel.git.commit_and_push", return_value=True) as mock_push,
+            patch("improve.parallel.run_phase_in_worktree", side_effect=results),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            run_parallel_batch(
+                ["simplify", "review"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                MagicMock(),
+            )
+
+        commit_message = mock_push.call_args[0][0]
+        assert commit_message == "Improve code quality"
+
+    def test_returns_false_when_ci_fails_without_revert_sha(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
+        retry = MagicMock(return_value=(False, 1, 1.0, 2.0))
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
+            patch("improve.parallel.ci.get_latest_run_id", return_value=100),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
+            patch("improve.parallel.git.commit_and_push", return_value=True),
+            patch("improve.parallel.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            result = run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                False,
+                MagicMock(),
+                retry,
+                revert_sha="",
+            )
+
+        assert result is False
+
+    def test_returns_false_when_revert_fails_after_ci_failure(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
+        retry = MagicMock(return_value=(False, 1, 1.0, 2.0))
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
+            patch("improve.parallel.ci.get_latest_run_id", return_value=100),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
+            patch("improve.parallel.git.commit_and_push", return_value=True),
+            patch("improve.parallel.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch("improve.parallel.git.revert_to", return_value=False),
+            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            result = run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                False,
+                MagicMock(),
+                retry,
+                revert_sha="abc123",
             )
 
         assert result is False

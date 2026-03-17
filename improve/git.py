@@ -5,14 +5,18 @@ import shutil
 from pathlib import Path
 
 from improve.claude import run_claude
+from improve.phases import build_conflict_prompt, extract_summary
 from improve.process import run
-from improve.prompt import build_conflict_prompt, extract_summary
 
 logger = logging.getLogger("improve")
 
 
 def head_sha() -> str:
-    return run(["git", "rev-parse", "HEAD"]).stdout.strip()
+    result = run(["git", "rev-parse", "HEAD"])
+    sha = result.stdout.strip()
+    if result.returncode != 0 or not sha:
+        logger.warning("git] Failed to determine HEAD sha")
+    return sha
 
 
 def revert_to(sha: str, branch_name: str) -> bool:
@@ -29,7 +33,9 @@ def revert_to(sha: str, branch_name: str) -> bool:
 
 
 def discard_changes() -> None:
-    run(["git", "checkout", "--", "."])
+    result = run(["git", "checkout", "--", "."])
+    if result.returncode != 0:
+        logger.warning("git] Failed to discard changes: %s", result.stderr.strip())
 
 
 def branch() -> str:
@@ -216,6 +222,9 @@ def apply_worktree_changes(worktree_path: str) -> list[str]:
     if not files:
         return []
     main_root = run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
+    if not main_root:
+        logger.warning("git] Cannot determine repo root, skipping worktree apply")
+        return []
     worktree = Path(worktree_path).resolve()
     main = Path(main_root).resolve()
     applied: list[str] = []

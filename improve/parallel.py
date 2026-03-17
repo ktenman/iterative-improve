@@ -9,8 +9,8 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from improve import ci, claude, git
+from improve.phases import build_commit_message, build_phase_prompt, extract_summary
 from improve.process import format_duration
-from improve.prompt import build_commit_message, build_phase_prompt, extract_summary
 from improve.state import PhaseResult
 
 logger = logging.getLogger("improve")
@@ -71,7 +71,7 @@ def _check_ci_after_batch(
         branch,
         known_previous_id=pre_batch_run_id,
     )
-    ci_passed, _, _, _ = retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
+    ci_passed, *_ = retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
     if ci_passed:
         return True
     if revert_sha:
@@ -132,7 +132,13 @@ def run_parallel_batch(
                     result.phase,
                     ", ".join(sorted(overlap)),
                 )
-            applied = git.apply_worktree_changes(worktrees[result.phase])
+            try:
+                applied = git.apply_worktree_changes(worktrees[result.phase])
+            except OSError:
+                logger.exception("parallel] Failed to apply changes from %s", result.phase)
+                result.changes_made = False
+                result.files = []
+                continue
             result.files = applied
             seen_files.update(applied)
 

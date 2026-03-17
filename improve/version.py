@@ -29,7 +29,7 @@ def get_latest_version() -> str | None:
             data = json.load(resp)
             tag = data.get("tag_name") or ""
             return tag.lstrip("v")
-    except (json.JSONDecodeError, OSError, http.client.HTTPException):
+    except (json.JSONDecodeError, OSError, http.client.HTTPException, AttributeError, TypeError):
         return None
 
 
@@ -68,9 +68,12 @@ def _auto_upgrade(installed: str, latest: str) -> None:
 
 
 def check_for_update() -> None:
-    installed = get_installed_version()
-    latest = get_latest_version()
-    if not latest:
-        return
-    if _parse_version(latest) > _parse_version(installed):
-        _auto_upgrade(installed, latest)
+    try:
+        installed = get_installed_version()
+        latest = get_latest_version()
+        if not latest:
+            return
+        if _parse_version(latest) > _parse_version(installed):
+            _auto_upgrade(installed, latest)
+    except Exception:
+        logger.debug("update] Version check failed", exc_info=True)

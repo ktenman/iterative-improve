@@ -29,6 +29,7 @@ TAG_COLORS = {
     "git": BLUE,
     "sync": BLUE,
     "claude": MAGENTA,
+    "parallel": BOLD_WHITE,
     "signal": DARK_YELLOW,
     "update": GRAY,
     "preflight": GRAY,
