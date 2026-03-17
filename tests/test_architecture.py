@@ -55,7 +55,7 @@ ALLOWED_IMPORTS = {
     "preflight": {"improve.process"},
     "process": set(),
     "prompt": set(),
-    "state": {"improve", "improve.process"},
+    "state": {"improve", "improve.color", "improve.process"},
     "version": set(),
 }
 

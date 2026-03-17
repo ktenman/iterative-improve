@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from improve import color
 from improve.loop import MAX_CI_RETRIES, IterationLoop
 from improve.prompt import AVAILABLE_PHASES
 from improve.state import LoopState, PhaseResult
@@ -255,7 +256,7 @@ class TestPrintSummary:
         loop.print_summary(15.0)
 
         output = capsys.readouterr().out
-        assert "RESULTS" in output
+        assert "Results" in output
         assert "Extracted helper" in output
 
     def test_prints_empty_summary_when_no_phases_ran(self, tmp_path, monkeypatch, capsys):
@@ -428,7 +429,7 @@ class TestRun:
             loop.run(1, 3)
 
         output = capsys.readouterr().out
-        assert "RESULTS" in output
+        assert "Results" in output
 
     def test_dispatches_to_sequential_when_not_batch(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -716,7 +717,7 @@ class TestContinuousMode:
             loop.run(1, 1000)
 
         output = capsys.readouterr().out
-        assert "Iteration 1 ---" in output
+        assert "Iteration 1" in output
         assert "1/1000" not in output
 
     def test_shows_iteration_with_max_when_not_continuous(self, tmp_path, monkeypatch, capsys):
@@ -729,13 +730,11 @@ class TestContinuousMode:
             loop.run(1, 5)
 
         output = capsys.readouterr().out
-        assert "Iteration 1/5 ---" in output
+        assert "Iteration 1/5" in output
 
 
 class TestPrintSummaryReverted:
     def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch, capsys):
-        from improve import color
-
         color.enabled = False
         loop = _make_loop(tmp_path, monkeypatch)
         result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
@@ -744,5 +743,5 @@ class TestPrintSummaryReverted:
         loop.print_summary(10.0)
 
         output = capsys.readouterr().out
-        assert "CI:REVT" in output
+        assert "REVT" in output
         assert "Reverted:       1" in output

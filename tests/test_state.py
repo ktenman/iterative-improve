@@ -116,9 +116,9 @@ class TestFormatSummary:
 
         output = format_summary(results, 10.0)
 
-        assert "RESULTS" in output
+        assert "Results" in output
         assert "Extracted helper" in output
-        assert "CI:PASS" in output
+        assert "PASS" in output
 
     def test_shows_reverted_status(self):
         result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
@@ -126,7 +126,7 @@ class TestFormatSummary:
 
         output = format_summary(results, 10.0)
 
-        assert "CI:REVT" in output
+        assert "REVT" in output
         assert "Reverted:       1" in output
 
     def test_shows_zero_counts_for_empty_results(self):

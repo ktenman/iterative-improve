@@ -173,11 +173,11 @@ def main() -> None:
 
     mode = "parallel" if args.parallel else ("batch" if args.batch else "sequential")
     iter_display = "continuous" if continuous else f"{start_iteration}-{max_iterations}"
-    border = color.wrap("=" * 50, color.BOLD + color.CYAN)
+    border = color.separator()
     header = (
         f"\n{border}\n"
         f"  Iterative Improvement Loop v{get_installed_version()}\n"
-        f"  Branch:     {current_branch}\n"
+        f"  Branch:     {color.wrap(current_branch, color.BOLD_WHITE)}\n"
         f"  Iterations: {iter_display}\n"
         f"  Phases:     {', '.join(phases)}\n"
         f"  Mode:       {mode}\n"

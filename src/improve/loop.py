@@ -272,9 +272,10 @@ class IterationLoop:
 
     def run(self, start_iteration: int, max_iterations: int) -> None:
         self.loop_start = time.monotonic()
+        sep = color.separator()
         for i in range(start_iteration, max_iterations + 1):
             label = str(i) if self.continuous else f"{i}/{max_iterations}"
-            print(color.wrap(f"\n--- Iteration {label} ---", color.BOLD_WHITE))
+            print(f"\n{sep}\n  {color.section_title(f'Iteration {label}')}\n{sep}")
             logger.info("loop] === Iteration %s ===", label)
             self.state.iteration = i
             self.state.save()
@@ -283,14 +284,13 @@ class IterationLoop:
                 logger.error("loop] Merge conflict could not be resolved, stopping")
                 break
 
-            runner = (
-                self.run_parallel_batch_iteration
-                if self.parallel
-                else self.run_batch_iteration
-                if self.batch
-                else self.run_sequential_iteration
-            )
-            if not runner(i):
+            if self.parallel:
+                keep_going = self.run_parallel_batch_iteration(i)
+            elif self.batch:
+                keep_going = self.run_batch_iteration(i)
+            else:
+                keep_going = self.run_sequential_iteration(i)
+            if not keep_going:
                 break
 
         total = time.monotonic() - self.loop_start

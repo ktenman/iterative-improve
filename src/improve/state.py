@@ -104,17 +104,19 @@ class LoopState:
 def _ci_label(r: dict) -> str:
     if r.get("reverted"):
         return color.wrap("REVT", color.DARK_YELLOW)
-    return color.wrap("PASS", color.DARK_GREEN) if r["ci_passed"] else color.wrap("FAIL", color.RED)
+    if r["ci_passed"]:
+        return color.wrap("PASS", color.DARK_GREEN)
+    return color.wrap("FAIL", color.RED)
 
 
 def format_summary(results: list[dict], total_elapsed: float) -> str:
     total_claude = sum(r.get("claude_seconds", 0) for r in results)
     total_ci = sum(r.get("ci_seconds", 0) for r in results)
     overhead = format_duration(max(0, total_elapsed - total_claude - total_ci))
-    banner = color.wrap("=" * 60, color.BOLD + color.CYAN)
+    banner = color.separator()
     lines = [
         f"\n{banner}",
-        color.wrap("RESULTS", color.BOLD + color.CYAN),
+        color.section_title("Results"),
         banner,
         f"  Phases run:     {len(results)}",
         f"  With changes:   {sum(1 for r in results if r['changes_made'])}",
@@ -127,14 +129,10 @@ def format_summary(results: list[dict], total_elapsed: float) -> str:
         "",
     ]
     for r in results:
-        marker_char = "+" if r["changes_made"] else " "
-        if marker_char == "+":
-            marker = color.wrap(f"[{marker_char}]", color.BOLD + color.DARK_GREEN)
-        else:
-            marker = f"[{marker_char}]"
-        phase_name = color.wrap(r["phase"], color.phase_color(r["phase"]))
-        dur = color.wrap(format_duration(r.get("duration_seconds", 0)), color.DIM)
+        mark = color.status_mark(r["ci_passed"], r["changes_made"], r.get("reverted", False))
+        phase_name = color.wrap(f"{r['phase']:10s}", color.phase_color(r["phase"]))
+        dur = color.wrap(f"{format_duration(r.get('duration_seconds', 0)):>9s}", color.DIM)
         ci_label = _ci_label(r)
-        lines.append(f"  {marker} {phase_name:>21s} | CI:{ci_label} | {dur:>20s} | {r['summary']}")
+        lines.append(f"  {mark} {phase_name}  {ci_label}  {dur}  {r['summary']}")
     lines.extend([f"\n  State: {STATE_FILE}", f"  Log:   {LOG_FILE}"])
     return "\n".join(lines)

@@ -10,6 +10,8 @@ RESET = "\033[0m"
 BOLD = "\033[1m"
 DIM = "\033[2m"
 RED = "\033[31m"
+GREEN = "\033[32m"
+YELLOW = "\033[33m"
 BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 CYAN = "\033[36m"
@@ -33,21 +35,43 @@ TAG_COLORS = {
     "state": GRAY,
 }
 
+BOX_WIDTH = 56
+
 
 def init(force_no_color: bool = False) -> None:
     global enabled
-    if force_no_color or os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+    if force_no_color or "NO_COLOR" in os.environ or os.environ.get("TERM") == "dumb":
         enabled = False
         return
     enabled = sys.stdout.isatty()
 
 
 def wrap(text: str, code: str) -> str:
-    return f"{code}{text}{RESET}" if enabled else text
+    if not enabled or not code:
+        return text
+    return f"{code}{text}{RESET}"
 
 
 def phase_color(phase: str) -> str:
     return PHASE_COLORS.get(phase, "")
+
+
+def status_mark(passed: bool, changed: bool, reverted: bool = False) -> str:
+    if reverted:
+        return wrap("\u21ba", YELLOW)
+    if not changed:
+        return wrap("\u00b7", DIM)
+    if passed:
+        return wrap("\u2713", GREEN)
+    return wrap("\u2717", RED)
+
+
+def separator() -> str:
+    return wrap("=" * BOX_WIDTH, BOLD + CYAN)
+
+
+def section_title(title: str) -> str:
+    return wrap(title, BOLD + CYAN)
 
 
 class ColorFormatter(logging.Formatter):
@@ -56,8 +80,17 @@ class ColorFormatter(logging.Formatter):
         if not enabled or "]" not in msg:
             return super().format(record)
         tag, rest = msg.split("]", 1)
-        color = TAG_COLORS.get(tag.strip(), PHASE_COLORS.get(tag.strip(), ""))
-        if color:
-            record.msg = f"{color}{tag}]{RESET}{rest}"
-            record.args = ()
-        return super().format(record)
+        tag_name = tag.strip()
+        clr = TAG_COLORS.get(tag_name, PHASE_COLORS.get(tag_name, ""))
+        if not clr:
+            return super().format(record)
+        record = logging.makeLogRecord(record.__dict__)
+        record.msg = f"{clr}{tag}]{RESET}{rest}"
+        record.args = ()
+        formatted = super().format(record)
+        formatted = formatted.replace(f"[{clr}", f"{clr}[", 1)
+        clr_pos = formatted.find(clr)
+        if clr_pos > 0:
+            prefix = formatted[:clr_pos]
+            formatted = f"{GRAY}{prefix}{RESET}{formatted[clr_pos:]}"
+        return formatted
