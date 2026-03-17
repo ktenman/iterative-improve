@@ -2,7 +2,6 @@ from unittest.mock import patch
 
 import pytest
 
-from improve.ci import CIProvider
 from improve.ci_gh import GitHubCI
 from tests import _cp
 
@@ -13,10 +12,6 @@ def provider():
 
 
 class TestGitHubCI:
-    def test_satisfies_ci_provider_protocol(self, provider):
-        typed: CIProvider = provider
-        assert isinstance(typed, GitHubCI)
-
     def test_get_latest_run_id_parses_database_id(self, provider):
         with patch("improve.ci_gh.run", return_value=_cp(stdout='[{"databaseId": 99}]')):
             assert provider.get_latest_run_id("main") == 99

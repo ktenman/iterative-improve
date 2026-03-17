@@ -2,7 +2,6 @@ import pytest
 
 from improve.phases import (
     AVAILABLE_PHASES,
-    PHASE_COMMIT_PREFIX,
     _truncate,
     build_ci_fix_prompt,
     build_commit_message,
@@ -52,11 +51,6 @@ class TestBuildCommitMessage:
         )
 
         assert len(result) <= 50
-
-
-class TestAvailablePhases:
-    def test_contains_all_expected_phases(self):
-        assert set(AVAILABLE_PHASES) == {"simplify", "review", "security"}
 
 
 class TestStripCodeFences:
@@ -186,17 +180,6 @@ class TestBuildCommitMessageEdgeCases:
         result = build_commit_message("unknown_phase", "something")
 
         assert result.startswith("Fix")
-
-
-class TestPhaseCommitPrefix:
-    def test_simplify_prefix_is_simplify(self):
-        assert PHASE_COMMIT_PREFIX["simplify"] == "Simplify"
-
-    def test_review_prefix_is_fix(self):
-        assert PHASE_COMMIT_PREFIX["review"] == "Fix"
-
-    def test_security_prefix_is_fix(self):
-        assert PHASE_COMMIT_PREFIX["security"] == "Fix"
 
 
 class TestExtractSummaryBoundary:

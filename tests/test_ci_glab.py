@@ -92,16 +92,24 @@ class TestWatchRun:
         with patch.object(provider, "get_run_conclusion", return_value=conclusion):
             assert provider.watch_run(1, timeout=60) is expected
 
-    def test_returns_false_on_timeout(self, provider, monkeypatch):
-        monkeypatch.setattr("improve.ci_glab.POLL_INTERVAL", 0.001)
-        with patch.object(provider, "get_run_conclusion", return_value=None):
-            assert provider.watch_run(1, timeout=0) is False
+    def test_returns_false_on_timeout(self, provider):
+        clock = iter([0.0, 61.0])
+        with (
+            patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
+            patch("improve.ci_glab.time.sleep"),
+            patch.object(provider, "get_run_conclusion", return_value=None),
+        ):
+            assert provider.watch_run(1, timeout=60) is False
 
-    def test_polls_until_conclusion_reached(self, provider, monkeypatch):
-        monkeypatch.setattr("improve.ci_glab.POLL_INTERVAL", 0.001)
-        with patch.object(
-            provider, "get_run_conclusion", side_effect=[None, None, "success"]
-        ) as mock_conclusion:
+    def test_polls_until_conclusion_reached(self, provider):
+        clock = iter([0.0, 10.0, 20.0, 30.0])
+        with (
+            patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
+            patch("improve.ci_glab.time.sleep"),
+            patch.object(
+                provider, "get_run_conclusion", side_effect=[None, None, "success"]
+            ) as mock_conclusion,
+        ):
             result = provider.watch_run(1, timeout=60)
 
         assert result is True
