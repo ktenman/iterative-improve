@@ -3,10 +3,9 @@ from unittest.mock import patch
 
 import pytest
 
-from improve import color
 from improve.phases import AVAILABLE_PHASES
 from improve.runner import MAX_CI_RETRIES, IterationLoop
-from improve.state import LoopState, PhaseResult, format_summary
+from improve.state import LoopState, PhaseResult
 
 
 def _make_loop(
@@ -103,28 +102,59 @@ class TestRetryCiFixes:
         assert claude_time == 1.5
         assert ci_time == 3.0
 
-    def test_stops_when_no_changes_produced(self, tmp_path, monkeypatch):
+    def test_stops_when_no_changes_produced(self, tmp_path, monkeypatch, caplog):
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_changes", return_value=False),
+            caplog.at_level(logging.INFO, logger="improve"),
         ):
             passed, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
 
         assert passed is False
         assert retries == 1
+        assert "No fix produced" in caplog.text
 
-    def test_stops_when_push_fails(self, tmp_path, monkeypatch):
+    def test_stops_when_push_fails(self, tmp_path, monkeypatch, caplog):
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_changes", return_value=True),
             patch("improve.git.commit_and_push", return_value=False),
+            caplog.at_level(logging.WARNING, logger="improve"),
         ):
             passed, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
 
         assert passed is False
         assert retries == 1
+        assert "Push failed" in caplog.text
+
+    def test_logs_attempt_number_on_retry(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.claude.run_claude", return_value=("output", 1.0)),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            loop.retry_ci_fixes(False, "err", "Fix")
+
+        assert "Attempt 1/5" in caplog.text
+
+    def test_passes_pre_push_id_to_wait_for_ci(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.claude.run_claude", return_value=("out", 1.0)),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=42),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)) as mock_wait,
+        ):
+            loop.retry_ci_fixes(False, "err", "Fix")
+
+        mock_wait.assert_called_once_with("feature", known_previous_id=42)
 
     def test_exhausts_all_retry_attempts(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -260,26 +290,6 @@ class TestRunPhase:
             result = loop.run_phase("security", 1, skip_ci=True)
 
         assert result.phase == "security"
-
-
-class TestFormatSummaryIntegration:
-    def test_formats_results_with_phase_details(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch)
-        loop.state.add(
-            PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0, 10.0, 8.0, 2.0)
-        )
-
-        output = format_summary(loop.state.results, 15.0)
-
-        assert "Results" in output
-        assert "Extracted helper" in output
-
-    def test_formats_empty_summary_when_no_phases_ran(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch)
-
-        output = format_summary(loop.state.results, 0.0)
-
-        assert "Phases run:     0" in output
 
 
 class TestRunBatchIteration:
@@ -801,16 +811,3 @@ class TestContinuousMode:
 
         output = capsys.readouterr().out
         assert "Iteration 1/5" in output
-
-
-class TestFormatSummaryReverted:
-    def test_shows_reverted_status_for_reverted_phases(self, tmp_path, monkeypatch):
-        color.enabled = False
-        loop = _make_loop(tmp_path, monkeypatch)
-        result = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1, reverted=True)
-        loop.state.add(result)
-
-        output = format_summary(loop.state.results, 10.0)
-
-        assert "REVT" in output
-        assert "Reverted:       1" in output

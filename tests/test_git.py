@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import patch
 
 import pytest
@@ -26,6 +27,16 @@ class TestHeadSha:
         assert "Failed to determine HEAD sha" in caplog.text
 
 
+class TestHeadShaEdgeCases:
+    def test_returns_empty_when_command_succeeds_with_empty_output(self):
+        with patch("improve.git.run", return_value=_cp(stdout="")):
+            assert git.head_sha() == ""
+
+    def test_returns_sha_when_command_succeeds(self):
+        with patch("improve.git.run", return_value=_cp(stdout="abc123\n")):
+            assert git.head_sha() == "abc123"
+
+
 class TestRevertTo:
     def test_returns_true_on_successful_reset_and_push(self):
         with patch("improve.git.run") as mock_run:
@@ -43,6 +54,35 @@ class TestRevertTo:
         with patch("improve.git.run") as mock_run:
             mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
             assert git.revert_to("abc123", "feature") is False
+
+    def test_logs_truncated_sha_on_success(self, caplog):
+        with (
+            patch("improve.git.run") as mock_run,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            mock_run.side_effect = [_cp(), _cp()]
+            git.revert_to("abc12345xyz", "feature")
+
+        assert "abc12345" in caplog.text
+
+    def test_logs_reset_failed_warning(self, caplog):
+        with (
+            patch("improve.git.run", return_value=_cp(returncode=1, stderr="oops")),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            git.revert_to("abc123", "feature")
+
+        assert "Reset failed" in caplog.text
+
+    def test_logs_push_failed_warning(self, caplog):
+        with (
+            patch("improve.git.run") as mock_run,
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
+            git.revert_to("abc123", "feature")
+
+        assert "Force push failed" in caplog.text
 
 
 class TestDiscardChanges:
@@ -91,6 +131,12 @@ class TestDetectPlatform:
     def test_defaults_to_github_when_remote_fails(self):
         with patch("improve.git.run", return_value=_cp(returncode=1)):
             assert git.detect_platform() == "github"
+
+    def test_passes_correct_command_to_git(self):
+        with patch("improve.git.run", return_value=_cp(stdout="https://github.com/u/r\n")) as m:
+            git.detect_platform()
+
+        m.assert_called_once_with(["git", "remote", "get-url", "origin"])
 
 
 class TestHasChanges:
@@ -204,6 +250,27 @@ class TestCommitAndPush:
         ):
             mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
             assert git.commit_and_push("Fix bug", "feature") is False
+
+    def test_logs_pushed_message_on_success(self, caplog):
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.run") as mock_run,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            mock_run.side_effect = [_cp(), _cp()]
+            git.commit_and_push("Fix bug", "feature")
+
+        assert "Pushed:" in caplog.text
+
+    def test_logs_commit_failed_warning(self, caplog):
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.run", return_value=_cp(returncode=1, stderr="err")),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            git.commit_and_push("Fix bug", "feature")
+
+        assert "Commit failed" in caplog.text
 
 
 class TestSyncWithMain:
@@ -601,3 +668,40 @@ class TestSquashBranch:
             result = git.squash_branch("feature", "Squashed")
 
         assert result is False
+
+    def test_returns_true_when_zero_commits(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [
+                _cp(stdout="abc123\n"),
+                _cp(stdout="0\n"),
+            ]
+            assert git.squash_branch("feature", "Squashed") is True
+
+    def test_logs_nothing_to_squash_for_one_commit(self, caplog):
+        with (
+            patch("improve.git.run") as mock_run,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            mock_run.side_effect = [
+                _cp(stdout="abc123\n"),
+                _cp(stdout="1\n"),
+            ]
+            git.squash_branch("feature", "Squashed")
+
+        assert "Nothing to squash" in caplog.text
+
+    def test_logs_success_message_after_squash(self, caplog):
+        with (
+            patch("improve.git.run") as mock_run,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            mock_run.side_effect = [
+                _cp(stdout="abc123\n"),
+                _cp(stdout="3\n"),
+                _cp(),
+                _cp(),
+                _cp(),
+            ]
+            git.squash_branch("feature", "Squashed")
+
+        assert "Squashed and force-pushed" in caplog.text

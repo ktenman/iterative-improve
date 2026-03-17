@@ -2,7 +2,6 @@ from unittest.mock import patch
 
 import pytest
 
-from improve.ci import CIProvider
 from improve.ci_gh import GitHubCI
 from tests import _cp
 
@@ -13,10 +12,6 @@ def provider():
 
 
 class TestGitHubCI:
-    def test_satisfies_ci_provider_protocol(self, provider):
-        typed: CIProvider = provider
-        assert isinstance(typed, GitHubCI)
-
     def test_get_latest_run_id_parses_database_id(self, provider):
         with patch("improve.ci_gh.run", return_value=_cp(stdout='[{"databaseId": 99}]')):
             assert provider.get_latest_run_id("main") == 99
@@ -59,4 +54,32 @@ class TestGitHubCI:
 
     def test_get_failed_logs_returns_fallback_when_empty(self, provider):
         with patch("improve.ci_gh.run", return_value=_cp(stdout="")):
+            assert provider.get_failed_logs(42) == "No logs available"
+
+    def test_get_latest_run_id_passes_workflow_and_branch(self, provider):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="[]")) as mock_run:
+            provider.get_latest_run_id("my-branch")
+
+        args = mock_run.call_args[0][0]
+        assert "--workflow" in args
+        assert "my-branch" in args
+
+    def test_get_run_conclusion_passes_run_id_in_command(self, provider):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout='{"conclusion": "success"}')) as m:
+            provider.get_run_conclusion(99)
+
+        assert "99" in m.call_args[0][0]
+
+    def test_get_run_conclusion_returns_none_on_non_dict_json(self, provider):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="[1,2]")):
+            assert provider.get_run_conclusion(42) is None
+
+    def test_get_failed_logs_passes_timeout(self, provider):
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="log output")) as mock_run:
+            provider.get_failed_logs(42)
+
+        assert mock_run.call_args[1].get("timeout") == 60
+
+    def test_get_failed_logs_returns_fallback_on_command_failure(self, provider):
+        with patch("improve.ci_gh.run", return_value=_cp(returncode=1)):
             assert provider.get_failed_logs(42) == "No logs available"

@@ -57,20 +57,6 @@ class TestWrap:
         assert result == f"{color.RED}hello{color.RESET}"
 
 
-class TestPhaseColor:
-    def test_returns_dark_green_for_simplify(self):
-        assert color.phase_color("simplify") == color.DARK_GREEN
-
-    def test_returns_dark_yellow_for_review(self):
-        assert color.phase_color("review") == color.DARK_YELLOW
-
-    def test_returns_dark_red_for_security(self):
-        assert color.phase_color("security") == color.DARK_RED
-
-    def test_returns_empty_string_for_unknown_phase(self):
-        assert color.phase_color("unknown") == ""
-
-
 class TestStatusMark:
     def test_shows_check_mark_for_passed_with_changes(self):
         color.enabled = False
