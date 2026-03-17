@@ -27,6 +27,16 @@ class TestHeadSha:
         assert "Failed to determine HEAD sha" in caplog.text
 
 
+class TestHeadShaEdgeCases:
+    def test_returns_empty_when_command_succeeds_with_empty_output(self):
+        with patch("improve.git.run", return_value=_cp(stdout="")):
+            assert git.head_sha() == ""
+
+    def test_returns_sha_when_command_succeeds(self):
+        with patch("improve.git.run", return_value=_cp(stdout="abc123\n")):
+            assert git.head_sha() == "abc123"
+
+
 class TestRevertTo:
     def test_returns_true_on_successful_reset_and_push(self):
         with patch("improve.git.run") as mock_run:
@@ -121,6 +131,12 @@ class TestDetectPlatform:
     def test_defaults_to_github_when_remote_fails(self):
         with patch("improve.git.run", return_value=_cp(returncode=1)):
             assert git.detect_platform() == "github"
+
+    def test_passes_correct_command_to_git(self):
+        with patch("improve.git.run", return_value=_cp(stdout="https://github.com/u/r\n")) as m:
+            git.detect_platform()
+
+        m.assert_called_once_with(["git", "remote", "get-url", "origin"])
 
 
 class TestHasChanges:
