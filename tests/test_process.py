@@ -24,6 +24,13 @@ class TestRun:
         assert result.stdout == ""
         assert result.stderr == "Timed out"
 
+    def test_returns_exit_code_1_when_command_not_found(self):
+        result = run(["nonexistent_binary_xyz_12345"])
+
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr != ""
+
 
 class TestRequireTools:
     def test_raises_system_exit_1_when_tool_missing(self):

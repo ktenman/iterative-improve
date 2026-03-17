@@ -69,6 +69,17 @@ class TestGetLatestVersion:
 
         assert result is None
 
+    def test_returns_none_when_api_returns_non_dict_json(self):
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"[]"
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("improve.version.urllib.request.urlopen", return_value=mock_resp):
+            result = get_latest_version()
+
+        assert result is None
+
 
 class TestAutoUpgrade:
     def test_runs_uv_tool_upgrade_when_uv_available(self, caplog):
@@ -165,3 +176,7 @@ class TestCheckForUpdate:
             check_for_update()
 
         mock_upgrade.assert_not_called()
+
+    def test_swallows_unexpected_exceptions_in_daemon_thread(self):
+        with patch("improve.version.get_installed_version", side_effect=RuntimeError("boom")):
+            check_for_update()

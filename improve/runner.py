@@ -8,13 +8,15 @@ from dataclasses import replace
 
 from improve import ci, claude, color, git
 from improve.parallel import run_parallel_batch
-from improve.process import format_duration
-from improve.prompt import (
+from improve.phases import (
     build_ci_fix_prompt,
     build_commit_message,
     build_phase_prompt,
+    build_squash_prompt,
     extract_summary,
+    strip_code_fences,
 )
+from improve.process import format_duration
 from improve.state import LoopState, PhaseResult, format_summary
 
 logger = logging.getLogger("improve")
@@ -59,7 +61,8 @@ class IterationLoop:
         except Exception:
             logger.warning("signal] Failed to save state during shutdown", exc_info=True)
         try:
-            self.print_summary(time.monotonic() - self.loop_start if self.loop_start else 0)
+            elapsed = time.monotonic() - self.loop_start if self.loop_start else 0
+            print(format_summary(self.state.results, elapsed))
         except Exception:
             logger.warning("signal] Failed to print summary during shutdown", exc_info=True)
         sys.exit(130)
@@ -146,9 +149,6 @@ class IterationLoop:
                 logger.warning("loop] Failed to discard changes after crash", exc_info=True)
             return PhaseResult.crashed(iteration, phase)
 
-    def print_summary(self, total_elapsed: float) -> None:
-        print(format_summary(self.state.results, total_elapsed))
-
     def _drop_converged_phases(self, results: list[PhaseResult]) -> None:
         converged = {
             r.phase for r in results if not r.changes_made and r.summary != "Phase crashed"
@@ -161,20 +161,6 @@ class IterationLoop:
             ", ".join(sorted(converged)),
             ", ".join(self._active_phases) or "none",
         )
-
-    def _mark_recent_reverted(self, count: int) -> None:
-        for r in self.state.results[-count:]:
-            if r["changes_made"]:
-                r["reverted"] = True
-        self.state.save()
-
-    def _revert_batch(self, pre_sha: str, result_count: int) -> bool:
-        logger.info("loop] Reverting batch changes (CI failed)")
-        if not git.revert_to(pre_sha, self.state.branch):
-            logger.warning("loop] Revert failed, changes may be in inconsistent state")
-            return False
-        self._mark_recent_reverted(result_count)
-        return True
 
     def run_batch_iteration(self, iteration: int) -> bool:
         pre_sha = git.head_sha() if self.revert_on_fail else ""
@@ -194,17 +180,24 @@ class IterationLoop:
             logger.warning("loop] Stopping: push failed")
             return False
 
-        if not self.skip_ci:
-            ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
-                self.state.branch,
-                known_previous_id=pre_batch_run_id,
-            )
-            ci_passed, _, _, _ = self.retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
-            if not ci_passed:
-                if self.revert_on_fail and pre_sha:
-                    return self._revert_batch(pre_sha, len(results))
-                logger.warning("loop] Stopping: CI failed")
-                return False
+        if self.skip_ci:
+            return True
+
+        ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
+            self.state.branch,
+            known_previous_id=pre_batch_run_id,
+        )
+        ci_passed, *_ = self.retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
+        if ci_passed:
+            return True
+        if not (self.revert_on_fail and pre_sha):
+            logger.warning("loop] Stopping: CI failed")
+            return False
+        logger.info("loop] Reverting batch changes (CI failed)")
+        if not git.revert_to(pre_sha, self.state.branch):
+            logger.warning("loop] Revert failed, changes may be in inconsistent state")
+            return False
+        self.state.mark_recent_reverted(len(results))
         return True
 
     def run_parallel_batch_iteration(self, iteration: int) -> bool:
@@ -215,7 +208,7 @@ class IterationLoop:
             self.state.add(result)
             phase_results.append(result)
 
-        result = run_parallel_batch(
+        keep_going = run_parallel_batch(
             phases=self._active_phases,
             iteration=iteration,
             branch=self.state.branch,
@@ -225,11 +218,10 @@ class IterationLoop:
             retry_ci_fixes=self.retry_ci_fixes,
             revert_sha=pre_sha,
         )
-        if phase_results:
-            self._drop_converged_phases(phase_results)
-        if pre_sha and result and git.head_sha() == pre_sha:
-            self._mark_recent_reverted(len(phase_results))
-        return result
+        self._drop_converged_phases(phase_results)
+        if pre_sha and keep_going and git.head_sha() == pre_sha:
+            self.state.mark_recent_reverted(len(phase_results))
+        return keep_going
 
     def run_sequential_iteration(self, iteration: int) -> bool:
         results = []
@@ -239,12 +231,11 @@ class IterationLoop:
 
             if not result.ci_passed and self.revert_on_fail and pre_sha:
                 logger.info("loop] Reverting %s changes (CI failed)", phase)
-                if git.revert_to(pre_sha, self.state.branch):
-                    result = replace(result, reverted=True)
-                else:
+                if not git.revert_to(pre_sha, self.state.branch):
                     logger.warning("loop] Revert failed for %s, stopping", phase)
                     self.state.add(result)
                     return False
+                result = replace(result, reverted=True)
 
             self.state.add(result)
             results.append(result)
@@ -254,17 +245,19 @@ class IterationLoop:
                 return False
 
         self._drop_converged_phases(results)
-        has_changes = any(r.changes_made for r in results)
-        if not has_changes:
+        if not any(r.changes_made for r in results):
             logger.info("loop] Converged: no changes in any phase")
-        return has_changes
+            return False
+        return True
 
     def _squash_branch(self) -> None:
         kept = self.state.kept_results()
         if not kept:
             logger.info("loop] No changes to squash")
             return
-        message = "Improve code quality\n\n" + "\n".join(f"- {r['summary']}" for r in kept)
+        prompt, fallback = build_squash_prompt(git.diff_vs_main(), kept)
+        output, _ = claude.run_claude(prompt, quiet=True)
+        message = strip_code_fences(output) or fallback
         if git.squash_branch(self.state.branch, message):
             logger.info("loop] Squashed all commits into one")
         else:
@@ -295,6 +288,6 @@ class IterationLoop:
 
         total = time.monotonic() - self.loop_start
         logger.info("loop] Finished in %s", format_duration(total))
-        self.print_summary(total)
+        print(format_summary(self.state.results, total))
         if self.squash:
             self._squash_branch()

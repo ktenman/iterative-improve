@@ -72,6 +72,12 @@ class LoopState:
     def kept_results(self) -> list[dict]:
         return [r for r in self.results if r["changes_made"] and not r.get("reverted")]
 
+    def mark_recent_reverted(self, count: int) -> None:
+        for r in self.results[-count:]:
+            if r["changes_made"]:
+                r["reverted"] = True
+        self.save()
+
     def context(self) -> str:
         changed = self.kept_results()
         if not changed:
@@ -79,10 +85,13 @@ class LoopState:
         return "\n".join(f"- [{r['phase']}] {r['summary']}" for r in changed)
 
     def save(self) -> None:
-        STATE_DIR.mkdir(exist_ok=True)
-        temp = STATE_FILE.with_suffix(".tmp")
-        temp.write_text(json.dumps(asdict(self), indent=2))
-        temp.replace(STATE_FILE)
+        try:
+            STATE_DIR.mkdir(exist_ok=True)
+            temp = STATE_FILE.with_suffix(".tmp")
+            temp.write_text(json.dumps(asdict(self), indent=2))
+            temp.replace(STATE_FILE)
+        except OSError as exc:
+            logger.warning("state] Failed to save %s: %s", STATE_FILE, exc)
 
     @staticmethod
     def load() -> LoopState | None:

@@ -7,11 +7,10 @@ import threading
 from datetime import datetime
 
 from improve import ci, claude, color, git
-from improve.ci_gitlab import GitLabCI
-from improve.loop import IterationLoop
-from improve.preflight import run_preflight
-from improve.process import require_tools
-from improve.prompt import AVAILABLE_PHASES
+from improve.ci_glab import GitLabCI
+from improve.phases import AVAILABLE_PHASES
+from improve.process import require_tools, run_preflight
+from improve.runner import IterationLoop
 from improve.state import LOG_FILE, STATE_DIR, LoopState
 from improve.version import check_for_update, get_installed_version
 

@@ -41,6 +41,53 @@ def _result(text):
     return json.dumps({"type": "result", "result": text}) + "\n"
 
 
+class TestTerminateProcess:
+    def test_skips_already_exited_process(self):
+        proc = MagicMock()
+        proc.poll.return_value = 0
+
+        improve.claude._terminate_process(proc)
+
+        proc.terminate.assert_not_called()
+
+    def test_terminates_running_process(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+
+        improve.claude._terminate_process(proc)
+
+        proc.terminate.assert_called_once()
+
+    def test_kills_process_when_terminate_times_out(self):
+        import subprocess
+
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 5), None]
+
+        improve.claude._terminate_process(proc)
+
+        proc.kill.assert_called_once()
+
+
+class TestTerminateActive:
+    def test_terminates_all_active_processes(self):
+        proc1 = MagicMock()
+        proc1.poll.return_value = None
+        proc2 = MagicMock()
+        proc2.poll.return_value = None
+
+        with patch.object(improve.claude, "_active_processes", {proc1, proc2}):
+            improve.claude.terminate_active()
+
+        proc1.terminate.assert_called_once()
+        proc2.terminate.assert_called_once()
+
+    def test_does_nothing_when_no_active_processes(self):
+        with patch.object(improve.claude, "_active_processes", set()):
+            improve.claude.terminate_active()
+
+
 class TestSetTimeout:
     def test_updates_global_timeout(self, monkeypatch):
         monkeypatch.setattr(improve.claude, "CLAUDE_TIMEOUT", 0)
@@ -162,6 +209,16 @@ class TestRunClaude:
 
     def test_handles_unparseable_json_lines(self):
         proc = _make_process(["not valid json\n", _result("ok")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+        ):
+            text, _ = run_claude("prompt")
+
+        assert text == "ok"
+
+    def test_skips_non_dict_json_values_without_crashing(self):
+        proc = _make_process(["null\n", "123\n", '"hello"\n', "[1,2]\n", _result("ok")])
         with (
             patch("improve.claude.subprocess.Popen", return_value=proc),
             patch("improve.claude.threading.Timer"),
