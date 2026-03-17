@@ -17,9 +17,9 @@ jobs:
 
       - run: uv sync --dev
 
-      - name: Run full mutation testing (60min max)
+      - name: Run full mutation testing (3h max)
         run: |
-          timeout 3600 uv run mutmut run \
+          timeout 10800 uv run mutmut run \
             --paths-to-mutate=improve/ \
             --paths-to-exclude=improve/__init__.py,improve/version.py,improve/color.py \
             || rc=$?
