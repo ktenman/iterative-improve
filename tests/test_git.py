@@ -150,6 +150,10 @@ class TestHasChanges:
         with patch("improve.git.run", return_value=_cp(stdout="")):
             assert git.has_changes() is False
 
+    def test_returns_false_when_only_improve_loop_files_changed(self):
+        with patch("improve.git.run", return_value=_cp(stdout=" M .improve-loop/state.json\n")):
+            assert git.has_changes() is False
+
 
 class TestChangedFiles:
     def test_extracts_filenames_from_porcelain_output(self):
@@ -162,6 +166,16 @@ class TestChangedFiles:
 
     def test_returns_empty_list_when_no_changes(self):
         with patch("improve.git.run", return_value=_cp(stdout="")):
+            assert git.changed_files() == []
+
+    def test_excludes_improve_loop_directory_files(self):
+        result = _cp(stdout=" M src/a.py\n M .improve-loop/state.json\n?? .improve-loop/run.log\n")
+        with patch("improve.git.run", return_value=result):
+            assert git.changed_files() == ["src/a.py"]
+
+    def test_returns_empty_when_only_improve_loop_files_changed(self):
+        result = _cp(stdout=" M .improve-loop/state.json\n")
+        with patch("improve.git.run", return_value=result):
             assert git.changed_files() == []
 
 
@@ -615,7 +629,7 @@ class TestSquashBranch:
             ]
             assert git.squash_branch("feature", "Squashed") is True
 
-        mock_run.assert_any_call(["git", "merge-base", "HEAD", "main"])
+        mock_run.assert_any_call(["git", "merge-base", "HEAD", "origin/main"])
         mock_run.assert_any_call(["git", "rev-list", "--count", "abc123..HEAD"])
         mock_run.assert_any_call(["git", "reset", "--soft", "abc123"])
         mock_run.assert_any_call(["git", "commit", "-m", "Squashed"])

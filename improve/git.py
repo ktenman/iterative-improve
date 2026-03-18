@@ -53,7 +53,7 @@ def detect_platform() -> str:
 
 
 def has_changes() -> bool:
-    return bool(run(["git", "status", "--porcelain", "--no-renames"]).stdout.strip())
+    return bool(changed_files())
 
 
 def changed_files(cwd: str | None = None) -> list[str]:
@@ -62,7 +62,8 @@ def changed_files(cwd: str | None = None) -> list[str]:
         cmd.extend(["-C", cwd])
     cmd.extend(["status", "--porcelain", "--no-renames"])
     lines = run(cmd).stdout.split("\n")
-    return [line[3:].strip() for line in lines if line.strip()]
+    paths = (line[3:].strip() for line in lines if line.strip())
+    return [p for p in paths if not p.startswith(".improve-loop/")]
 
 
 def diff_vs_main() -> str:
@@ -244,7 +245,7 @@ def apply_worktree_changes(worktree_path: str) -> list[str]:
 
 
 def squash_branch(branch_name: str, message: str) -> bool:
-    base = run(["git", "merge-base", "HEAD", "main"]).stdout.strip()
+    base = run(["git", "merge-base", "HEAD", "origin/main"]).stdout.strip()
     if not base:
         logger.warning("git] Cannot find merge base with main")
         return False
