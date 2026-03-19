@@ -21,7 +21,6 @@ iterative-improve --resume                  # resume after interruption
 iterative-improve --skip-ci                 # skip CI checks
 iterative-improve --phases simplify,review  # specific phases only
 iterative-improve --squash                  # squash commits when done
-iterative-improve --revert-on-fail          # revert bad changes, keep going
 iterative-improve --phase-timeout 300       # Claude subprocess timeout (default: 900s)
 
 # Lint
@@ -39,6 +38,9 @@ uv run pytest -v --tb=short --cov=improve --cov-report=term-missing
 All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 
 - **cli.py** — Argument parsing, logging setup, phase validation, entry point
+- **config.py** — Config dataclass holding runtime settings (timeouts, CI provider)
+- **mode.py** — Mode enum (sequential, batch, parallel)
+- **platform.py** — Platform enum (github, gitlab)
 - **runner.py** — `IterationLoop` class: orchestration, signal handling (SIGINT/SIGTERM save state before exit), phase execution, batch/sequential/parallel iteration, squash, results summary
 - **parallel.py** — Parallel phase execution using git worktrees and `ThreadPoolExecutor`; each phase runs `claude -p` in its own worktree, changes are merged back and committed as one
 - **claude.py** — Spawns `claude -p` as subprocess with `stream-json` output format, parses streaming events, tracks active processes (thread-safe) for graceful shutdown
@@ -62,7 +64,6 @@ All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 - Claude subprocess timeout: configurable via `--phase-timeout` (default 900s)
 - CI run timeout: configurable via `--ci-timeout` (default 15 min)
 - CI fix retries capped at 5 attempts per phase
-- `--revert-on-fail` reverts changes that fail CI (`git reset --hard` + force push) and continues
 - Crash recovery: phase exceptions are caught, working tree is cleaned, loop continues
 - `--batch` and `--parallel` are mutually exclusive (argparse enforced)
 - `--parallel` runs all phases concurrently in git worktrees, merges changes, single commit+push
@@ -73,7 +74,7 @@ All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 
 ## Code Standards
 
-- No comments — write self-documenting code with clear, descriptive naming
+- No comments except docstrings on protocols and dataclasses — write self-documenting code with clear, descriptive naming
 - Use guard clauses to exit early and reduce nesting
 - Keep methods small with a single responsibility (< 20 lines ideal)
 - Prefer immutability — avoid mutating shared state

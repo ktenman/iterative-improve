@@ -1,37 +1,41 @@
 import logging
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+from improve.config import Config
+from improve.mode import Mode
 from improve.phases import AVAILABLE_PHASES
 from improve.runner import MAX_CI_RETRIES, IterationLoop
 from improve.state import LoopState, PhaseResult
+from tests.conftest import _test_config
 
 
 def _make_loop(
-    tmp_path,
-    monkeypatch,
-    skip_ci=False,
-    batch=False,
-    phases=None,
-    squash=False,
-    parallel=False,
-    revert_on_fail=False,
-    continuous=False,
-):
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    skip_ci: bool = False,
+    mode: Mode = Mode.SEQUENTIAL,
+    phases: list[str] | None = None,
+    squash: bool = False,
+    continuous: bool = False,
+    config: Config | None = None,
+) -> IterationLoop:
     monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
     monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
     state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")
     if phases is None:
         phases = list(AVAILABLE_PHASES)
+    if config is None:
+        config = _test_config()
     return IterationLoop(
         state=state,
         skip_ci=skip_ci,
-        batch=batch,
+        mode=mode,
         phases=phases,
+        config=config,
         squash=squash,
-        parallel=parallel,
-        revert_on_fail=revert_on_fail,
         continuous=continuous,
     )
 
@@ -129,20 +133,6 @@ class TestRetryCiFixes:
         assert retries == 1
         assert "Push failed" in caplog.text
 
-    def test_logs_attempt_number_on_retry(self, tmp_path, monkeypatch, caplog):
-        loop = _make_loop(tmp_path, monkeypatch)
-        with (
-            patch("improve.claude.run_claude", return_value=("output", 1.0)),
-            patch("improve.git.has_changes", return_value=True),
-            patch("improve.ci.get_latest_run_id", return_value=100),
-            patch("improve.git.commit_and_push", return_value=True),
-            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)),
-            caplog.at_level(logging.INFO, logger="improve"),
-        ):
-            loop.retry_ci_fixes(False, "err", "Fix")
-
-        assert "Attempt 1/5" in caplog.text
-
     def test_passes_pre_push_id_to_wait_for_ci(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
         with (
@@ -154,7 +144,7 @@ class TestRetryCiFixes:
         ):
             loop.retry_ci_fixes(False, "err", "Fix")
 
-        mock_wait.assert_called_once_with("feature", known_previous_id=42)
+        mock_wait.assert_called_once_with("feature", loop.config, known_previous_id=42)
 
     def test_exhausts_all_retry_attempts(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -169,22 +159,6 @@ class TestRetryCiFixes:
 
         assert passed is False
         assert retries == MAX_CI_RETRIES
-
-    def test_logs_warning_when_all_retries_exhausted(self, tmp_path, monkeypatch, caplog):
-        loop = _make_loop(tmp_path, monkeypatch)
-        with (
-            patch("improve.claude.run_claude", return_value=("out", 1.0)),
-            patch("improve.git.has_changes", return_value=True),
-            patch("improve.ci.get_latest_run_id", return_value=100),
-            patch("improve.git.commit_and_push", return_value=True),
-            patch("improve.ci.wait_for_ci", return_value=(False, "still failing", 2.0)),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            passed, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
-
-        assert passed is False
-        assert retries == MAX_CI_RETRIES
-        assert "All 5 attempts exhausted" in caplog.text
 
     def test_accumulates_claude_and_ci_time_across_retries(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -204,6 +178,54 @@ class TestRetryCiFixes:
         assert retries == 2
         assert claude_time == 2.0
         assert ci_time == 4.0
+
+    def test_passes_commit_message_with_attempt_number(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.claude.run_claude", return_value=("out", 1.0)),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True) as mock_push,
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)),
+        ):
+            loop.retry_ci_fixes(False, "err", "Fix CI after simplify")
+
+        msg = mock_push.call_args[0][0]
+        assert msg == "Fix CI after simplify (attempt 1)"
+
+    def test_retries_exactly_max_times(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        call_count = 0
+
+        def count_calls(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return ("out", 1.0)
+
+        with (
+            patch("improve.claude.run_claude", side_effect=count_calls),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(False, "err", 1.0)),
+        ):
+            _, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
+
+        assert retries == MAX_CI_RETRIES
+        assert call_count == MAX_CI_RETRIES
+
+    def test_stops_retries_when_claude_raises_runtime_error(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.claude.run_claude", side_effect=RuntimeError("Claude crashed")),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            passed, retries, claude_time, _ci_time = loop.retry_ci_fixes(False, "err", "Fix")
+
+        assert passed is False
+        assert retries == 1
+        assert claude_time == 0.0
+        assert "Claude failed" in caplog.text
 
 
 class TestRunPhase:
@@ -291,10 +313,62 @@ class TestRunPhase:
 
         assert result.phase == "security"
 
+    def test_phase_result_has_correct_iteration_number(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 2.0)),
+            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.git.commit_and_push", return_value=True),
+        ):
+            result = loop.run_phase("simplify", 3, skip_ci=True)
+
+        assert result.iteration == 3
+
+    def test_no_changes_result_has_correct_phase(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("nothing", 1.0)),
+            patch("improve.git.changed_files", return_value=[]),
+        ):
+            result = loop.run_phase("security", 1, skip_ci=True)
+
+        assert result.phase == "security"
+        assert result.ci_passed is True
+
+    def test_fetches_pre_push_id_when_ci_not_skipped(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 1.0)),
+            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.ci.get_latest_run_id", return_value=42) as mock_get_id,
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 0, 0.0, 0.0)),
+        ):
+            loop.run_phase("simplify", 1, skip_ci=False)
+
+        mock_get_id.assert_called_once_with("feature", loop.config)
+
+    def test_does_not_fetch_pre_push_id_when_ci_skipped(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 1.0)),
+            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.ci.get_latest_run_id") as mock_get_id,
+            patch("improve.git.commit_and_push", return_value=True),
+        ):
+            loop.run_phase("simplify", 1, skip_ci=True)
+
+        mock_get_id.assert_not_called()
+
 
 class TestRunBatchIteration:
     def test_returns_false_when_no_changes_in_any_phase(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, batch=True)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH)
         no_changes = PhaseResult(1, "simplify", False, [], "No changes", True, 0)
 
         with patch.object(loop, "run_phase", return_value=no_changes):
@@ -303,7 +377,7 @@ class TestRunBatchIteration:
         assert result is False
 
     def test_returns_false_when_push_fails(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, batch=True)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH)
         push_failed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 0)
 
         with patch.object(loop, "run_phase", return_value=push_failed):
@@ -312,7 +386,7 @@ class TestRunBatchIteration:
         assert result is False
 
     def test_checks_ci_after_all_phases_complete(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, batch=True, skip_ci=False)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH, skip_ci=False)
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
         with (
             patch("improve.ci.get_latest_run_id", return_value=100),
@@ -325,7 +399,7 @@ class TestRunBatchIteration:
         assert result is True
 
     def test_skips_ci_check_when_skip_ci_is_true(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, batch=True, skip_ci=True)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH, skip_ci=True)
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
         with (
             patch.object(loop, "run_phase", return_value=changed),
@@ -338,13 +412,12 @@ class TestRunBatchIteration:
 
 
 class TestRunBatchCIFailure:
-    def test_batch_stops_when_ci_fails_without_revert_flag(self, tmp_path, monkeypatch):
+    def test_batch_stops_when_ci_fails(self, tmp_path, monkeypatch):
         loop = _make_loop(
             tmp_path,
             monkeypatch,
-            batch=True,
+            mode=Mode.BATCH,
             skip_ci=False,
-            revert_on_fail=False,
             phases=["simplify"],
         )
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
@@ -438,26 +511,6 @@ class TestSquashBranch:
 
         mock_squash.assert_not_called()
 
-    def test_excludes_reverted_results_from_squash_message(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, squash=True)
-        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))
-        loop.state.add(
-            PhaseResult(1, "review", True, ["b.py"], "Reverted change", False, 1, reverted=True)
-        )
-
-        with (
-            patch("improve.git.squash_branch", return_value=True) as mock_squash,
-            patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.git.diff_vs_main", return_value="diff"),
-            patch("improve.claude.run_claude", return_value=("", 0.0)),
-            patch.object(loop, "run_sequential_iteration", return_value=False),
-        ):
-            loop.run(1, 1)
-
-        message = mock_squash.call_args[0][1]
-        assert "Extracted helper" in message
-        assert "Reverted change" not in message
-
     def test_does_not_squash_when_flag_is_false(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch, squash=False)
         loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0))
@@ -470,6 +523,56 @@ class TestSquashBranch:
             loop.run(1, 1)
 
         mock_squash.assert_not_called()
+
+    def test_uses_strip_code_fences_on_claude_output(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, squash=True)
+        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0))
+
+        with (
+            patch("improve.git.diff_vs_main", return_value="diff"),
+            patch("improve.claude.run_claude", return_value=("```\nClean message\n```", 0.0)),
+            patch("improve.git.squash_branch", return_value=True) as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 1)
+
+        message = mock_squash.call_args[0][1]
+        assert message == "Clean message"
+
+    def test_uses_fallback_when_claude_returns_empty(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, squash=True)
+        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))
+
+        with (
+            patch("improve.git.diff_vs_main", return_value="diff"),
+            patch("improve.claude.run_claude", return_value=("", 0.0)),
+            patch("improve.git.squash_branch", return_value=True) as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 1)
+
+        message = mock_squash.call_args[0][1]
+        assert "Extracted helper" in message
+
+    def test_uses_fallback_when_claude_raises_runtime_error(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch, squash=True)
+        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))
+
+        with (
+            patch("improve.git.diff_vs_main", return_value="diff"),
+            patch("improve.claude.run_claude", side_effect=RuntimeError("Claude crashed")),
+            patch("improve.git.squash_branch", return_value=True) as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            loop.run(1, 1)
+
+        message = mock_squash.call_args[0][1]
+        assert "Extracted helper" in message
+        assert "Claude failed during squash" in caplog.text
 
 
 class TestRun:
@@ -494,7 +597,7 @@ class TestRun:
         mock_seq.assert_called_once_with(1)
 
     def test_dispatches_to_batch_when_batch_mode(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, batch=True)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH)
 
         with (
             patch("improve.git.sync_with_main", return_value=True),
@@ -514,6 +617,17 @@ class TestRun:
             loop.run(1, 5)
 
         assert loop.state.iteration == 2
+
+    def test_saves_state_each_iteration(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+        ):
+            loop.run(1, 1)
+
+        assert loop.state.iteration == 1
+        assert (tmp_path / "state.json").exists()
 
 
 class TestIntegration:
@@ -551,7 +665,7 @@ class TestIntegration:
 
 class TestRunParallelDispatch:
     def test_dispatches_to_parallel_when_parallel_mode(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, parallel=True)
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.PARALLEL)
 
         with (
             patch("improve.git.sync_with_main", return_value=True),
@@ -564,127 +678,6 @@ class TestRunParallelDispatch:
             loop.run(1, 1)
 
         mock_parallel.assert_called_once_with(1)
-
-
-class TestRevertOnFail:
-    def test_sequential_reverts_and_continues_on_ci_failure(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=True, phases=["simplify", "review"])
-        results = [
-            PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1),
-            PhaseResult(1, "review", True, ["b.py"], "More", True, 0),
-        ]
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch("improve.git.revert_to", return_value=True) as mock_revert,
-            patch.object(loop, "run_phase", side_effect=results),
-        ):
-            result = loop.run_sequential_iteration(1)
-
-        mock_revert.assert_called_once_with("abc123", "feature")
-        assert result is True
-        reverted = [r for r in loop.state.results if r.get("reverted")]
-        assert len(reverted) == 1
-        assert reverted[0]["phase"] == "simplify"
-
-    def test_sequential_stops_when_revert_fails(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=True, phases=["simplify", "review"])
-        ci_failed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 1)
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch("improve.git.revert_to", return_value=False),
-            patch.object(loop, "run_phase", return_value=ci_failed),
-        ):
-            result = loop.run_sequential_iteration(1)
-
-        assert result is False
-        assert len(loop.state.results) == 1
-
-    def test_sequential_stops_on_ci_failure_without_revert_flag(self, tmp_path, monkeypatch):
-        loop = _make_loop(tmp_path, monkeypatch, revert_on_fail=False)
-        ci_failed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", False, 0)
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch.object(loop, "run_phase", return_value=ci_failed),
-        ):
-            result = loop.run_sequential_iteration(1)
-
-        assert result is False
-
-    def test_batch_reverts_all_on_ci_failure(self, tmp_path, monkeypatch):
-        loop = _make_loop(
-            tmp_path,
-            monkeypatch,
-            batch=True,
-            skip_ci=False,
-            revert_on_fail=True,
-            phases=["simplify"],
-        )
-        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch("improve.ci.get_latest_run_id", return_value=100),
-            patch.object(loop, "run_phase", return_value=changed),
-            patch("improve.ci.wait_for_ci", return_value=(False, "error", 2.0)),
-            patch.object(loop, "retry_ci_fixes", return_value=(False, 1, 1.0, 2.0)),
-            patch("improve.git.revert_to", return_value=True) as mock_revert,
-        ):
-            result = loop.run_batch_iteration(1)
-
-        assert result is True
-        mock_revert.assert_called_once_with("abc123", "feature")
-
-    def test_batch_stops_when_revert_fails(self, tmp_path, monkeypatch):
-        loop = _make_loop(
-            tmp_path,
-            monkeypatch,
-            batch=True,
-            skip_ci=False,
-            revert_on_fail=True,
-            phases=["simplify"],
-        )
-        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch("improve.ci.get_latest_run_id", return_value=100),
-            patch.object(loop, "run_phase", return_value=changed),
-            patch("improve.ci.wait_for_ci", return_value=(False, "error", 2.0)),
-            patch.object(loop, "retry_ci_fixes", return_value=(False, 1, 1.0, 2.0)),
-            patch("improve.git.revert_to", return_value=False),
-        ):
-            result = loop.run_batch_iteration(1)
-
-        assert result is False
-
-    def test_parallel_marks_results_as_reverted_on_ci_failure(self, tmp_path, monkeypatch):
-        loop = _make_loop(
-            tmp_path,
-            monkeypatch,
-            parallel=True,
-            skip_ci=False,
-            revert_on_fail=True,
-            phases=["simplify"],
-        )
-        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
-
-        def fake_parallel_batch(**kwargs):
-            kwargs["add_result"](changed)
-            return True
-
-        with (
-            patch("improve.git.head_sha", return_value="abc123"),
-            patch("improve.runner.run_parallel_batch", side_effect=fake_parallel_batch),
-        ):
-            result = loop.run_parallel_batch_iteration(1)
-
-        assert result is True
-        reverted = [r for r in loop.state.results if r.get("reverted")]
-        assert len(reverted) == 1
-        assert reverted[0]["phase"] == "simplify"
 
 
 class TestDropConvergedPhases:
@@ -710,6 +703,28 @@ class TestDropConvergedPhases:
 
         assert "simplify" not in loop._active_phases
         assert "review" in loop._active_phases
+
+    def test_no_phases_dropped_when_all_have_changes(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult(1, "simplify", True, ["a.py"], "Changed", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Changed", True, 0),
+        ]
+
+        loop._drop_converged_phases(results)
+
+        assert loop._active_phases == ["simplify", "review"]
+
+    def test_all_phases_dropped_when_none_have_changes(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult(1, "simplify", False, [], "No changes needed", True, 0),
+            PhaseResult(1, "review", False, [], "No changes needed", True, 0),
+        ]
+
+        loop._drop_converged_phases(results)
+
+        assert loop._active_phases == []
 
 
 class TestRunPhaseSafe:
@@ -746,7 +761,6 @@ class TestCrashRecovery:
         ok_result = PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0)
 
         with (
-            patch("improve.git.head_sha", return_value="abc"),
             patch.object(
                 loop,
                 "run_phase",
@@ -765,14 +779,13 @@ class TestCrashRecovery:
         loop = _make_loop(
             tmp_path,
             monkeypatch,
-            batch=True,
+            mode=Mode.BATCH,
             skip_ci=True,
             phases=["simplify", "review"],
         )
         ok_result = PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0)
 
         with (
-            patch("improve.git.head_sha", return_value="abc"),
             patch.object(
                 loop,
                 "run_phase",
@@ -784,6 +797,49 @@ class TestCrashRecovery:
 
         assert result is True
         assert loop.state.results[0]["summary"] == "Phase crashed"
+
+
+class TestBatchSkipsCiGet:
+    def test_batch_does_not_fetch_pre_batch_run_id_when_skip_ci(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH, skip_ci=True)
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+        with (
+            patch("improve.ci.get_latest_run_id") as mock_get_id,
+            patch.object(loop, "run_phase", return_value=changed),
+        ):
+            loop.run_batch_iteration(1)
+
+        mock_get_id.assert_not_called()
+
+    def test_batch_fetches_pre_batch_run_id_when_ci_enabled(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.BATCH, skip_ci=False)
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0)
+        with (
+            patch("improve.ci.get_latest_run_id", return_value=100) as mock_get_id,
+            patch.object(loop, "run_phase", return_value=changed),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 1.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 0, 0.0, 0.0)),
+        ):
+            loop.run_batch_iteration(1)
+
+        mock_get_id.assert_called_once()
+
+
+class TestShutdownElapsedHandling:
+    def test_shutdown_prints_summary_with_zero_elapsed_when_loop_not_started(
+        self, tmp_path, monkeypatch
+    ):
+        loop = _make_loop(tmp_path, monkeypatch)
+        loop.loop_start = 0.0
+
+        with (
+            patch("improve.claude.terminate_active"),
+            patch("builtins.print") as mock_print,
+            pytest.raises(SystemExit),
+        ):
+            loop.shutdown(2, None)
+
+        mock_print.assert_called_once()
 
 
 class TestContinuousMode:
@@ -811,3 +867,147 @@ class TestContinuousMode:
 
         output = capsys.readouterr().out
         assert "Iteration 1/5" in output
+
+
+class TestMaxCiRetries:
+    def test_retry_loop_runs_exactly_5_times_not_4_or_6(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        claude_calls = []
+
+        def track_claude(*args, **kwargs):
+            claude_calls.append(1)
+            return ("out", 1.0)
+
+        with (
+            patch("improve.claude.run_claude", side_effect=track_claude),
+            patch("improve.git.has_changes", return_value=True),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(False, "err", 1.0)),
+        ):
+            _, retries, _, _ = loop.retry_ci_fixes(False, "err", "Fix")
+
+        assert retries == 5
+        assert len(claude_calls) == 5
+
+
+class TestRunPhaseCiTimeBoundary:
+    def test_no_ci_breakdown_when_total_ci_is_zero(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="f.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.git.commit_and_push", return_value=True),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=True)
+
+        assert result.ci_seconds == 0.0
+        assert "(claude:" not in caplog.text
+
+    def test_ci_breakdown_shown_when_total_ci_is_positive(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="f.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 0.1)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 0, 0.0, 0.0)),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert result.ci_seconds == 0.1
+        assert "claude:" in caplog.text
+
+
+class TestRunPhaseNoChangesResult:
+    def test_no_changes_returns_ci_passed_true(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("nothing", 1.0)),
+            patch("improve.git.changed_files", return_value=[]),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert result.ci_passed is True
+        assert result.changes_made is False
+        assert result.ci_retries == 0
+
+    def test_no_changes_has_duration(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("nothing", 1.5)),
+            patch("improve.git.changed_files", return_value=[]),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert result.duration_seconds > 0
+        assert result.claude_seconds == 1.5
+
+
+class TestRunPhaseDetails:
+    def test_returns_files_in_result(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="file.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
+            patch("improve.git.changed_files", return_value=["x.py"]),
+            patch("improve.git.commit_and_push", return_value=True),
+        ):
+            result = loop.run_phase("review", 1, skip_ci=True)
+
+        assert result.files == ["x.py"]
+        assert result.iteration == 1
+        assert result.phase == "review"
+
+    def test_includes_ci_time_breakdown_in_log_when_ci_runs(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="f.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(True, "", 10.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 0, 0.0, 0.0)),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert "claude:" in caplog.text
+        assert "ci:" in caplog.text
+
+    def test_does_not_show_ci_breakdown_when_no_ci_time(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="f.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.git.commit_and_push", return_value=True),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            loop.run_phase("simplify", 1, skip_ci=True)
+
+        assert "ci:" not in caplog.text
+
+    def test_accumulates_fix_claude_time(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        with (
+            patch("improve.git.diff_vs_main", return_value="f.py"),
+            patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 3.0)),
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.ci.get_latest_run_id", return_value=100),
+            patch("improve.git.commit_and_push", return_value=True),
+            patch("improve.ci.wait_for_ci", return_value=(False, "err", 5.0)),
+            patch.object(loop, "retry_ci_fixes", return_value=(True, 1, 2.0, 4.0)),
+        ):
+            result = loop.run_phase("simplify", 1, skip_ci=False)
+
+        assert result.claude_seconds == 5.0
+        assert result.ci_seconds == 9.0

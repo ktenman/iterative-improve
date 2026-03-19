@@ -4,21 +4,24 @@ import json
 import logging
 import time
 
+from improve.ci import CIConclusion
 from improve.process import run
 
 logger = logging.getLogger("improve")
 
 POLL_INTERVAL = 10
 
-_STATUS_MAP = {
-    "success": "success",
-    "canceled": "cancelled",
-    "failed": "failure",
-    "skipped": "failure",
+_STATUS_MAP: dict[str, CIConclusion] = {
+    "success": CIConclusion.SUCCESS,
+    "canceled": CIConclusion.CANCELLED,
+    "failed": CIConclusion.FAILURE,
+    "skipped": CIConclusion.FAILURE,
 }
 
 
 class GitLabCI:
+    """GitLab CI provider using the glab CLI."""
+
     def get_latest_run_id(self, branch: str) -> int | None:
         result = run(["glab", "ci", "list", "--ref", branch, "--per-page", "1", "-F", "json"])
         if result.returncode != 0:
@@ -30,7 +33,7 @@ class GitLabCI:
             logger.debug("ci] Failed to parse pipeline list: %s", exc)
             return None
 
-    def get_run_conclusion(self, run_id: int) -> str | None:
+    def get_run_conclusion(self, run_id: int) -> CIConclusion | None:
         result = run(["glab", "ci", "get", "-p", str(run_id), "-F", "json"])
         if result.returncode != 0:
             return None
@@ -45,7 +48,7 @@ class GitLabCI:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             conclusion = self.get_run_conclusion(run_id)
-            if conclusion == "success":
+            if conclusion == CIConclusion.SUCCESS:
                 return True
             if conclusion is not None:
                 return False

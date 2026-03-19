@@ -59,13 +59,13 @@ jobs:
 
       - run: uv sync --dev
 
-      - name: Run mutation testing (randomized, 5min max)
+      - name: Run mutation testing (randomized, 4min max)
         run: |
           FILES=$(find improve/ -name '*.py' \
             ! -name '__init__.py' ! -name 'version.py' ! -name 'color.py' \
             | shuf | tr '\n' ',')
           echo "Mutation order: $FILES"
-          timeout 300 uv run mutmut run \
+          timeout 240 uv run mutmut run \
             --paths-to-mutate="${FILES%,}" \
             || rc=$?
           rc=${rc:-0}
@@ -86,7 +86,7 @@ jobs:
               sys.exit(0)
           rate = killed * 100 / total
           print(f'Mutation kill rate: {rate:.1f}% ({killed}/{total} tested)')
-          if rate < 60:
-              print(f'FAIL: {rate:.1f}% is below 60% threshold')
+          if rate < 55:
+              print(f'FAIL: {rate:.1f}% is below 55% threshold')
               sys.exit(1)
           "

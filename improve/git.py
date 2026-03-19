@@ -6,30 +6,10 @@ from pathlib import Path
 
 from improve.claude import run_claude
 from improve.phases import build_conflict_prompt, extract_summary
+from improve.platform import Platform
 from improve.process import run
 
 logger = logging.getLogger("improve")
-
-
-def head_sha() -> str:
-    result = run(["git", "rev-parse", "HEAD"])
-    sha = result.stdout.strip()
-    if result.returncode != 0 or not sha:
-        logger.warning("git] Failed to determine HEAD sha")
-    return sha
-
-
-def revert_to(sha: str, branch_name: str) -> bool:
-    reset = run(["git", "reset", "--hard", sha])
-    if reset.returncode != 0:
-        logger.warning("git] Reset failed: %s", reset.stderr.strip())
-        return False
-    push = run(["git", "push", "--force-with-lease", "origin", branch_name])
-    if push.returncode != 0:
-        logger.warning("git] Force push failed: %s", push.stderr.strip())
-        return False
-    logger.info("git] Reverted to %s", sha[:8])
-    return True
 
 
 def discard_changes() -> None:
@@ -42,14 +22,14 @@ def branch() -> str:
     return run(["git", "branch", "--show-current"]).stdout.strip()
 
 
-def detect_platform() -> str:
+def detect_platform() -> Platform:
     result = run(["git", "remote", "get-url", "origin"])
     if result.returncode != 0:
-        return "github"
+        return Platform.GITHUB
     url = result.stdout.strip().lower()
     if "gitlab" in url:
-        return "gitlab"
-    return "github"
+        return Platform.GITLAB
+    return Platform.GITHUB
 
 
 def has_changes() -> bool:
@@ -141,6 +121,19 @@ def _commit_resolution(output: str) -> bool:
     return run(["git", "commit", "-m", f"Resolve merge conflicts: {summary[:40]}"]).returncode == 0
 
 
+def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, bool]:
+    logger.info("%s] Asking Claude to resolve conflicts...", tag)
+    try:
+        output, _ = run_claude(build_conflict_prompt(conflicts))
+        return output, True
+    except RuntimeError:
+        logger.warning(
+            "%s] Claude failed during conflict resolution, aborting merge", tag, exc_info=True
+        )
+        run(["git", "merge", "--abort"])
+        return "", False
+
+
 def _resolve_conflicts(branch_name: str) -> bool:
     conflicts = conflict_files()
     logger.warning(
@@ -149,8 +142,9 @@ def _resolve_conflicts(branch_name: str) -> bool:
         ", ".join(conflicts[:5]),
     )
 
-    logger.info("sync] Asking Claude to resolve conflicts...")
-    output, _ = run_claude(build_conflict_prompt(conflicts))
+    output, ok = _attempt_claude_resolution(conflicts, "sync")
+    if not ok:
+        return False
 
     if has_conflicts():
         logger.error("sync] Conflicts remain after Claude attempted resolution")
@@ -181,8 +175,9 @@ def resolve_existing_conflicts() -> bool:
         ", ".join(conflicts[:5]),
     )
 
-    logger.info("git] Asking Claude to resolve pre-existing conflicts...")
-    output, _ = run_claude(build_conflict_prompt(conflicts))
+    output, ok = _attempt_claude_resolution(conflicts, "git")
+    if not ok:
+        return False
 
     if has_conflicts():
         logger.warning("git] Auto-resolution failed, aborting merge to restore clean state...")

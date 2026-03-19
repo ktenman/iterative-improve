@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from improve import color
 
 
@@ -57,22 +59,32 @@ class TestWrap:
         assert result == f"{color.RED}hello{color.RESET}"
 
 
+class TestPhaseColor:
+    def test_returns_dark_green_for_simplify(self):
+        assert color.phase_color("simplify") == color.DARK_GREEN
+
+    def test_returns_dark_yellow_for_review(self):
+        assert color.phase_color("review") == color.DARK_YELLOW
+
+    def test_returns_dark_red_for_security(self):
+        assert color.phase_color("security") == color.DARK_RED
+
+    def test_returns_empty_for_unknown_phase(self):
+        assert color.phase_color("unknown") == ""
+
+
 class TestStatusMark:
-    def test_shows_check_mark_for_passed_with_changes(self):
+    @pytest.mark.parametrize(
+        ("passed", "changed", "expected"),
+        [
+            (True, True, "\u2713"),
+            (False, True, "\u2717"),
+            (True, False, "\u00b7"),
+        ],
+    )
+    def test_returns_expected_mark(self, passed, changed, expected):
         color.enabled = False
-        assert color.status_mark(passed=True, changed=True) == "\u2713"
-
-    def test_shows_cross_mark_for_failed_with_changes(self):
-        color.enabled = False
-        assert color.status_mark(passed=False, changed=True) == "\u2717"
-
-    def test_shows_dot_for_no_changes(self):
-        color.enabled = False
-        assert color.status_mark(passed=True, changed=False) == "\u00b7"
-
-    def test_shows_revert_mark_when_reverted(self):
-        color.enabled = False
-        assert color.status_mark(passed=False, changed=True, reverted=True) == "\u21ba"
+        assert color.status_mark(passed=passed, changed=changed) == expected
 
     def test_wraps_with_color_when_enabled(self):
         color.enabled = True

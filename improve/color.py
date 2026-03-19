@@ -11,7 +11,6 @@ BOLD = "\033[1m"
 DIM = "\033[2m"
 RED = "\033[31m"
 GREEN = "\033[32m"
-YELLOW = "\033[33m"
 BLUE = "\033[34m"
 MAGENTA = "\033[35m"
 CYAN = "\033[36m"
@@ -57,9 +56,7 @@ def phase_color(phase: str) -> str:
     return PHASE_COLORS.get(phase, "")
 
 
-def status_mark(passed: bool, changed: bool, reverted: bool = False) -> str:
-    if reverted:
-        return wrap("\u21ba", YELLOW)
+def status_mark(passed: bool, changed: bool) -> str:
     if not changed:
         return wrap("\u00b7", DIM)
     if passed:
