@@ -4,6 +4,7 @@ import json
 import logging
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 from improve import color
 from improve.process import format_duration
@@ -15,8 +16,17 @@ STATE_FILE = STATE_DIR / "state.json"
 LOG_FILE = STATE_DIR / "run.log"
 
 
+class CIFixResult(NamedTuple):
+    passed: bool
+    retries: int
+    claude_time: float
+    ci_time: float
+
+
 @dataclass
 class PhaseResult:
+    """Result of a single phase execution within an iteration."""
+
     iteration: int
     phase: str
     changes_made: bool
@@ -27,7 +37,6 @@ class PhaseResult:
     duration_seconds: float = 0.0
     claude_seconds: float = 0.0
     ci_seconds: float = 0.0
-    reverted: bool = False
 
     @classmethod
     def no_changes(
@@ -60,6 +69,8 @@ class PhaseResult:
 
 @dataclass
 class LoopState:
+    """Persistent state for the iteration loop, saved to .improve-loop/state.json."""
+
     branch: str
     started_at: str
     iteration: int = 0
@@ -70,13 +81,7 @@ class LoopState:
         self.save()
 
     def kept_results(self) -> list[dict]:
-        return [r for r in self.results if r["changes_made"] and not r.get("reverted")]
-
-    def mark_recent_reverted(self, count: int) -> None:
-        for r in self.results[-count:]:
-            if r["changes_made"]:
-                r["reverted"] = True
-        self.save()
+        return [r for r in self.results if r["changes_made"]]
 
     def context(self) -> str:
         changed = self.kept_results()
@@ -111,8 +116,6 @@ class LoopState:
 
 
 def _ci_label(r: dict) -> str:
-    if r.get("reverted"):
-        return color.wrap("REVT", color.DARK_YELLOW)
     if r["ci_passed"]:
         return color.wrap("PASS", color.DARK_GREEN)
     return color.wrap("FAIL", color.RED)
@@ -130,7 +133,6 @@ def format_summary(results: list[dict], total_elapsed: float) -> str:
         f"  Phases run:     {len(results)}",
         f"  With changes:   {sum(1 for r in results if r['changes_made'])}",
         f"  CI fixes:       {sum(r['ci_retries'] for r in results)}",
-        f"  Reverted:       {sum(1 for r in results if r.get('reverted'))}",
         f"  Total time:     {color.wrap(format_duration(total_elapsed), color.DIM)}",
         f"  Claude time:    {color.wrap(format_duration(total_claude), color.DIM)}",
         f"  CI time:        {color.wrap(format_duration(total_ci), color.DIM)}",
@@ -138,7 +140,7 @@ def format_summary(results: list[dict], total_elapsed: float) -> str:
         "",
     ]
     for r in results:
-        mark = color.status_mark(r["ci_passed"], r["changes_made"], r.get("reverted", False))
+        mark = color.status_mark(r["ci_passed"], r["changes_made"])
         phase_name = color.wrap(f"{r['phase']:10s}", color.phase_color(r["phase"]))
         dur = color.wrap(f"{format_duration(r.get('duration_seconds', 0)):>9s}", color.DIM)
         ci_label = _ci_label(r)

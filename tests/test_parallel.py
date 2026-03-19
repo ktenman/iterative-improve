@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 
 from improve.parallel import _collect_results, run_parallel_batch, run_phase_in_worktree
 from improve.state import PhaseResult
+from tests.conftest import _test_config
 
 
 class TestRunPhaseInWorktree:
@@ -11,7 +12,9 @@ class TestRunPhaseInWorktree:
             patch("improve.parallel.claude.run_claude", return_value=("NO_CHANGES_NEEDED", 1.0)),
             patch("improve.parallel.git.changed_files", return_value=[]),
         ):
-            result = run_phase_in_worktree("simplify", 1, "/tmp/wt", "file.py", "None")
+            result = run_phase_in_worktree(
+                "simplify", 1, "/tmp/wt", "file.py", "None", _test_config()
+            )
 
         assert result.changes_made is False
         assert result.summary == "No changes needed"
@@ -21,7 +24,9 @@ class TestRunPhaseInWorktree:
             patch("improve.parallel.claude.run_claude", return_value=("SUMMARY: Fixed stuff", 1.0)),
             patch("improve.parallel.git.changed_files", return_value=["file.py"]),
         ):
-            result = run_phase_in_worktree("simplify", 1, "/tmp/wt", "file.py", "None")
+            result = run_phase_in_worktree(
+                "simplify", 1, "/tmp/wt", "file.py", "None", _test_config()
+            )
 
         assert result.changes_made is True
         assert result.summary == "Fixed stuff"
@@ -31,7 +36,7 @@ class TestRunPhaseInWorktree:
             patch("improve.parallel.claude.run_claude", return_value=("", 1.0)) as mock_claude,
             patch("improve.parallel.git.changed_files", return_value=[]),
         ):
-            run_phase_in_worktree("review", 1, "/tmp/wt", "f.py", "None")
+            run_phase_in_worktree("review", 1, "/tmp/wt", "f.py", "None", _test_config())
 
         _, kwargs = mock_claude.call_args
         assert kwargs["cwd"] == "/tmp/wt"
@@ -82,6 +87,7 @@ class TestRunParallelBatch:
                 True,
                 add_result,
                 MagicMock(),
+                _test_config(),
             )
 
         assert result is False
@@ -107,6 +113,7 @@ class TestRunParallelBatch:
                 True,
                 add_result,
                 MagicMock(),
+                _test_config(),
             )
 
         assert result is True
@@ -126,6 +133,7 @@ class TestRunParallelBatch:
                 True,
                 MagicMock(),
                 MagicMock(),
+                _test_config(),
             )
 
         assert result is False
@@ -148,6 +156,7 @@ class TestRunParallelBatch:
                 True,
                 MagicMock(),
                 MagicMock(),
+                _test_config(),
             )
 
         mock_remove.assert_called_once()
@@ -175,39 +184,10 @@ class TestRunParallelBatch:
                 False,
                 MagicMock(),
                 retry,
+                _test_config(),
             )
 
         assert result is True
-
-    def test_reverts_on_ci_failure_when_revert_sha_provided(self):
-        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
-        retry = MagicMock(return_value=(False, 1, 1.0, 2.0))
-
-        with (
-            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
-            patch("improve.parallel.ci.get_latest_run_id", return_value=100),
-            patch("improve.parallel.git.create_worktree", return_value=True),
-            patch("improve.parallel.git.remove_worktree"),
-            patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
-            patch("improve.parallel.git.commit_and_push", return_value=True),
-            patch("improve.parallel.ci.wait_for_ci", return_value=(False, "error", 2.0)),
-            patch("improve.parallel.git.revert_to", return_value=True) as mock_revert,
-            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
-            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
-        ):
-            result = run_parallel_batch(
-                ["simplify"],
-                1,
-                "feature",
-                "None",
-                False,
-                MagicMock(),
-                retry,
-                revert_sha="abc123",
-            )
-
-        assert result is True
-        mock_revert.assert_called_once_with("abc123", "feature")
 
     def test_handles_oserror_when_applying_worktree_changes(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
@@ -232,6 +212,7 @@ class TestRunParallelBatch:
                 True,
                 add_result,
                 MagicMock(),
+                _test_config(),
             )
 
         assert result is False
@@ -258,6 +239,7 @@ class TestRunParallelBatch:
                 True,
                 MagicMock(),
                 MagicMock(),
+                _test_config(),
             )
 
         assert result is False
@@ -285,40 +267,131 @@ class TestRunParallelBatch:
                 True,
                 MagicMock(),
                 MagicMock(),
+                _test_config(),
             )
 
         commit_message = mock_push.call_args[0][0]
         assert commit_message == "Improve code quality"
 
-    def test_returns_false_when_ci_fails_without_revert_sha(self):
-        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
-        retry = MagicMock(return_value=(False, 1, 1.0, 2.0))
+    def test_single_changed_phase_uses_phase_commit_message(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "extract helper", True, 0)
 
         with (
             patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
-            patch("improve.parallel.ci.get_latest_run_id", return_value=100),
             patch("improve.parallel.git.create_worktree", return_value=True),
             patch("improve.parallel.git.remove_worktree"),
             patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
-            patch("improve.parallel.git.commit_and_push", return_value=True),
-            patch("improve.parallel.ci.wait_for_ci", return_value=(False, "error", 2.0)),
+            patch("improve.parallel.git.commit_and_push", return_value=True) as mock_push,
             patch("improve.parallel.run_phase_in_worktree", return_value=changed),
             patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
         ):
-            result = run_parallel_batch(
+            run_parallel_batch(
                 ["simplify"],
                 1,
                 "feature",
                 "None",
-                False,
+                True,
                 MagicMock(),
-                retry,
-                revert_sha="",
+                MagicMock(),
+                _test_config(),
             )
 
-        assert result is False
+        commit_message = mock_push.call_args[0][0]
+        assert commit_message.startswith("Extract")
 
-    def test_returns_false_when_revert_fails_after_ci_failure(self):
+    def test_overlap_detection_logs_warning(self, caplog):
+        import logging
+
+        results = [
+            PhaseResult(1, "simplify", True, ["shared.py"], "Simplified", True, 0),
+            PhaseResult(1, "review", True, ["shared.py"], "Fixed", True, 0),
+        ]
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="shared.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch(
+                "improve.parallel.git.apply_worktree_changes",
+                side_effect=[["shared.py"], ["shared.py"]],
+            ),
+            patch("improve.parallel.git.commit_and_push", return_value=True),
+            patch("improve.parallel.run_phase_in_worktree", side_effect=results),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            run_parallel_batch(
+                ["simplify", "review"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                MagicMock(),
+                _test_config(),
+            )
+
+        assert "overwrites" in caplog.text
+        assert "shared.py" in caplog.text
+
+    def test_skip_ci_true_bypasses_ci_check(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
+        retry = MagicMock()
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
+            patch("improve.parallel.git.commit_and_push", return_value=True),
+            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            result = run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                retry,
+                _test_config(),
+            )
+
+        assert result is True
+        retry.assert_not_called()
+
+    def test_oserror_marks_result_as_no_changes_with_empty_files(self):
+        changed = PhaseResult(1, "simplify", True, ["a.py", "b.py"], "Fixed", True, 0)
+        add_result = MagicMock()
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch(
+                "improve.parallel.git.apply_worktree_changes",
+                side_effect=OSError("Permission denied"),
+            ),
+            patch("improve.parallel.run_phase_in_worktree", return_value=changed),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                True,
+                add_result,
+                MagicMock(),
+                _test_config(),
+            )
+
+        added = add_result.call_args[0][0]
+        assert added.changes_made is False
+        assert added.files == []
+
+    def test_returns_false_when_ci_fails(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
         retry = MagicMock(return_value=(False, 1, 1.0, 2.0))
 
@@ -330,7 +403,6 @@ class TestRunParallelBatch:
             patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]),
             patch("improve.parallel.git.commit_and_push", return_value=True),
             patch("improve.parallel.ci.wait_for_ci", return_value=(False, "error", 2.0)),
-            patch("improve.parallel.git.revert_to", return_value=False),
             patch("improve.parallel.run_phase_in_worktree", return_value=changed),
             patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
         ):
@@ -342,7 +414,7 @@ class TestRunParallelBatch:
                 False,
                 MagicMock(),
                 retry,
-                revert_sha="abc123",
+                _test_config(),
             )
 
         assert result is False

@@ -56,9 +56,6 @@ iterative-improve -n 5 --parallel
 iterative-improve -n 5 --phases simplify,review
 iterative-improve -n 5 --phases security
 
-# Revert changes that fail CI instead of stopping
-iterative-improve -n 5 --revert-on-fail
-
 # Squash all branch commits into one when done
 iterative-improve -n 5 --squash
 
@@ -89,7 +86,6 @@ iterative-improve -n 5 --no-color
 | `--squash` | off | Squash all branch commits into one after finishing |
 | `--resume` | off | Resume from saved state after interruption |
 | `--skip-ci` | off | Skip CI checks |
-| `--revert-on-fail` | off | Revert changes that fail CI instead of stopping |
 | `--ci-timeout` | 15 | CI timeout in minutes |
 | `--ci-provider` | auto-detect | CI provider (`github` or `gitlab`) |
 | `--phase-timeout` | 900 | Claude subprocess timeout in seconds |
@@ -121,13 +117,11 @@ Each iteration:
 2. **Analyze**: Claude examines the branch diff and runs configured phases
 3. **Commit & push**: stages fixes, generates a commit message from Claude's summary, pushes to origin
 4. **CI check**: waits for CI (GitHub Actions or GitLab CI). If the build breaks, failed logs are fed back to Claude for auto-fix (up to 5 retries). Cancelled runs are automatically re-triggered (up to 3 times)
-5. **Next or done**: if `--revert-on-fail` is set, bad changes are reverted and the loop continues; otherwise it stops on CI failure. Loop ends when no more changes are produced or the iteration limit is reached
+5. **Next or done**: the loop stops on CI failure. Loop ends when no more changes are produced or the iteration limit is reached
 
 In **batch mode**, all phases run first, then CI checks once per iteration (faster for branches with many changes).
 
 In **parallel mode**, each phase runs in its own git worktree simultaneously via `ThreadPoolExecutor`. Changes are merged back and committed as one. This is the fastest mode — 3x faster than sequential when running all 3 phases.
-
-With **`--revert-on-fail`**, changes that fail CI are reverted (`git reset --hard` + force push) and the loop continues with the next phase instead of stopping.
 
 With **`--squash`**, all commits on the branch are squashed into a single commit with a summary after iterations complete.
 
@@ -139,7 +133,7 @@ This tool combines two ideas: **iterative self-refinement** and a **quality ratc
 
 ### Autonomous AI Research
 
-- [autoresearch](https://github.com/karpathy/autoresearch) (Karpathy, 2025): autonomous AI research on a single GPU — an agent modifies code, trains for a fixed time budget, evaluates against a single metric, keeps improvements, discards regressions, and iterates overnight. Several features in `iterative-improve` were directly inspired by this pattern: continuous mode (fire-and-forget), `--revert-on-fail` (discard regressions, keep going), crash recovery (phase failures don't kill the run), and configurable timeouts
+- [autoresearch](https://github.com/karpathy/autoresearch) (Karpathy, 2025): autonomous AI research on a single GPU — an agent modifies code, trains for a fixed time budget, evaluates against a single metric, keeps improvements, discards regressions, and iterates overnight. Several features in `iterative-improve` were directly inspired by this pattern: continuous mode (fire-and-forget), crash recovery (phase failures don't kill the run), and configurable timeouts
 
 ### Quality Ratchet Pattern
 
@@ -177,18 +171,21 @@ The core idea: replace manual trial-and-error with a structured loop where an LL
 ## Architecture
 
 ```
-src/improve/
+improve/
 ├── cli.py         Argument parsing, logging setup, entry point
-├── loop.py        IterationLoop: orchestration, signal handling, phase execution
+├── config.py      Config dataclass for runtime settings
+├── mode.py        Mode enum (sequential, batch, parallel)
+├── platform.py    Platform enum (github, gitlab)
+├── runner.py      IterationLoop: orchestration, signal handling, phase execution
 ├── parallel.py    Parallel phase execution using git worktrees
 ├── claude.py      Claude subprocess with streaming JSON output
-├── ci.py          GitHub Actions polling via gh CLI
-├── ci_gitlab.py   GitLab CI polling via glab CLI
+├── ci.py          CI orchestration: polling, retries, provider abstraction
+├── ci_gh.py       GitHub Actions CI provider (gh CLI)
+├── ci_glab.py     GitLab CI provider (glab CLI)
 ├── git.py         Git operations: diff, commit, push, sync, squash, worktrees, conflict resolution
-├── process.py     Subprocess wrapper, tool validation
-├── prompt.py      Phase prompts, summary extraction, commit messages
+├── process.py     Subprocess wrapper, tool validation, preflight checks
+├── phases.py      Phase prompts, summary extraction, commit messages
 ├── state.py       LoopState/PhaseResult dataclasses, JSON persistence
-├── preflight.py   Pre-run validation: remote reachability, push permissions, CI auth
 ├── color.py       ANSI color support for terminal output
 └── version.py     Update checker (background thread at startup)
 ```
@@ -200,14 +197,14 @@ src/improve/
 uv sync --dev
 
 # Lint
-uv run ruff check src/ tests/
-uv run ruff format --check src/ tests/
+uv run ruff check improve/ tests/
+uv run ruff format --check improve/ tests/
 
 # Test with coverage
 uv run pytest -v --tb=short --cov=improve --cov-report=term-missing
 
 # Auto-fix lint issues
-uv run ruff check --fix src/ && uv run ruff format src/
+uv run ruff check --fix improve/ && uv run ruff format improve/
 ```
 
 ## Releasing

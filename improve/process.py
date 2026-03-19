@@ -7,7 +7,7 @@ import sys
 
 logger = logging.getLogger("improve")
 
-PREFLIGHT_TIMEOUT = 15
+PREFLIGHT_TIMEOUT = 16
 
 
 def run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
@@ -53,7 +53,8 @@ def _check_preflight(cmd: list[str], error_msg: str, *args: str) -> None:
 def run_preflight(branch: str, ci_tool: str, skip_ci: bool) -> None:
     _check_preflight(
         ["git", "ls-remote", "--heads", "origin"],
-        "preflight] Git remote 'origin' is not reachable. Verify URL: git remote get-url origin",
+        "preflight] Unable to connect to remote repository."
+        " Please check your internet connection and try again",
     )
     _check_preflight(
         ["git", "push", "--dry-run", "origin", branch],

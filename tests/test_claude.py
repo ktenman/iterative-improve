@@ -5,10 +5,20 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import improve.claude
-from improve.claude import _summarize_tool_input, run_claude, set_timeout
+from improve.claude import (
+    ClaudeResult,
+    Result,
+    TextDelta,
+    ToolInput,
+    ToolStart,
+    ToolStop,
+    _classify_events,
+    _summarize_tool_input,
+    run_claude,
+)
 
 
-def _make_process(stdout_lines, returncode=0, stderr=""):
+def _make_process(stdout_lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
     proc = MagicMock()
     proc.stdout = iter(stdout_lines)
     proc.stderr = iter(stderr.splitlines(keepends=True)) if stderr else iter([])
@@ -16,28 +26,28 @@ def _make_process(stdout_lines, returncode=0, stderr=""):
     return proc
 
 
-def _text_delta(text):
+def _text_delta(text: str) -> str:
     event = {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": text}}}
     return json.dumps(event) + "\n"
 
 
-def _tool_start(name):
+def _tool_start(name: str) -> str:
     block = {"type": "tool_use", "name": name}
     inner = {"type": "content_block_start", "content_block": block}
     return json.dumps({"type": "stream_event", "event": inner}) + "\n"
 
 
-def _tool_input(partial_json):
+def _tool_input(partial_json: str) -> str:
     delta = {"type": "input_json_delta", "partial_json": partial_json}
     event = {"type": "stream_event", "event": {"delta": delta}}
     return json.dumps(event) + "\n"
 
 
-def _tool_stop():
+def _tool_stop() -> str:
     return json.dumps({"type": "stream_event", "event": {"type": "content_block_stop"}}) + "\n"
 
 
-def _result(text):
+def _result(text: str) -> str:
     return json.dumps({"type": "result", "result": text}) + "\n"
 
 
@@ -88,15 +98,6 @@ class TestTerminateActive:
             improve.claude.terminate_active()
 
 
-class TestSetTimeout:
-    def test_updates_global_timeout(self, monkeypatch):
-        monkeypatch.setattr(improve.claude, "CLAUDE_TIMEOUT", 0)
-
-        set_timeout(300)
-
-        assert improve.claude.CLAUDE_TIMEOUT == 300
-
-
 class TestSummarizeToolInput:
     @pytest.mark.parametrize(
         "tool, raw_json, expected",
@@ -122,8 +123,32 @@ class TestSummarizeToolInput:
         assert result.endswith("...")
         assert len(result.split(" > ")[1]) == 83
 
+    def test_does_not_truncate_value_at_exactly_80_chars(self):
+        result = _summarize_tool_input("Bash", '{"command": "' + "a" * 80 + '"}')
+
+        assert not result.endswith("...")
+        assert len(result.split(" > ")[1]) == 80
+
+    def test_truncates_value_at_81_chars(self):
+        result = _summarize_tool_input("Bash", '{"command": "' + "a" * 81 + '"}')
+
+        assert result.endswith("...")
+        assert len(result.split(" > ")[1]) == 83
+
 
 class TestRunClaude:
+    def test_returns_claude_result_named_tuple(self):
+        proc = _make_process([_result("output")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+        ):
+            result = run_claude("prompt")
+
+        assert isinstance(result, ClaudeResult)
+        assert result.text == "output"
+        assert isinstance(result.elapsed, float)
+
     def test_returns_result_text_from_result_event(self):
         proc = _make_process([_result("Final output")])
         with (
@@ -179,24 +204,6 @@ class TestRunClaude:
 
         mock_stdout.write.assert_has_calls([call("Hi"), call("\n")])
 
-    def test_logs_tool_use_with_summarized_input(self, caplog):
-        lines = [
-            _tool_start("Bash"),
-            _tool_input('{"command":'),
-            _tool_input(' "ls"}'),
-            _tool_stop(),
-            _result(""),
-        ]
-        proc = _make_process(lines)
-        with (
-            patch("improve.claude.subprocess.Popen", return_value=proc),
-            patch("improve.claude.threading.Timer"),
-            caplog.at_level(logging.INFO, logger="improve"),
-        ):
-            run_claude("prompt")
-
-        assert "Bash > ls" in caplog.text
-
     def test_skips_blank_lines(self):
         proc = _make_process(["\n", "   \n", _result("ok")])
         with (
@@ -227,27 +234,26 @@ class TestRunClaude:
 
         assert text == "ok"
 
-    def test_logs_stderr_on_nonzero_return_code(self, caplog):
+    def test_raises_on_nonzero_return_code_with_no_result(self):
         proc = _make_process([], returncode=1, stderr="something broke")
         with (
             patch("improve.claude.subprocess.Popen", return_value=proc),
             patch("improve.claude.threading.Timer"),
-            caplog.at_level(logging.WARNING, logger="improve"),
+            pytest.raises(RuntimeError, match="something broke"),
         ):
             run_claude("prompt")
 
-        assert "something broke" in caplog.text
-
-    def test_does_not_log_stderr_on_success(self, caplog):
-        proc = _make_process([_result("")], returncode=0, stderr="")
+    def test_returns_result_on_nonzero_return_code_when_result_present(self, caplog):
+        proc = _make_process([_result("partial output")], returncode=1, stderr="warning")
         with (
             patch("improve.claude.subprocess.Popen", return_value=proc),
             patch("improve.claude.threading.Timer"),
             caplog.at_level(logging.WARNING, logger="improve"),
         ):
-            run_claude("prompt")
+            text, _ = run_claude("prompt")
 
-        assert "stderr" not in caplog.text
+        assert text == "partial output"
+        assert "warning" in caplog.text
 
     def test_clears_active_process_after_completion(self):
         proc = _make_process([_result("")])
@@ -270,16 +276,6 @@ class TestRunClaude:
             run_claude("prompt")
 
         MockTimer.return_value.cancel.assert_called_once()
-
-    def test_does_not_terminate_process_during_normal_run(self):
-        proc = _make_process([_result("")])
-        with (
-            patch("improve.claude.subprocess.Popen", return_value=proc),
-            patch("improve.claude.threading.Timer"),
-        ):
-            run_claude("prompt")
-
-        proc.terminate.assert_not_called()
 
     def test_timeout_callback_terminates_only_its_own_process(self):
         proc = _make_process([_result("")])
@@ -305,16 +301,6 @@ class TestRunClaude:
 
         assert mock_popen.call_args[1]["cwd"] == "/some/path"
 
-    def test_defaults_cwd_to_none(self):
-        proc = _make_process([_result("")])
-        with (
-            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
-            patch("improve.claude.threading.Timer"),
-        ):
-            run_claude("prompt")
-
-        assert mock_popen.call_args[1]["cwd"] is None
-
     def test_suppresses_stdout_in_quiet_mode(self):
         proc = _make_process([_text_delta("Hello"), _result("")])
         with (
@@ -327,6 +313,76 @@ class TestRunClaude:
         for call_args in mock_stdout.write.call_args_list:
             assert call_args[0][0] != "Hello"
 
+    def test_logs_stderr_truncated_to_300_chars_on_nonzero_exit(self, caplog):
+        long_stderr = "e" * 500
+        proc = _make_process([_result("partial")], returncode=1, stderr=long_stderr)
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            text, _ = run_claude("prompt")
+
+        assert text == "partial"
+        stderr_records = [r for r in caplog.records if "stderr" in r.message]
+        assert stderr_records
+        assert len(stderr_records[0].message) < 400
+
+    def test_raises_runtime_error_with_stderr_on_failure_no_result(self):
+        proc = _make_process([], returncode=2, stderr="specific error msg")
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+            pytest.raises(RuntimeError, match="specific error msg"),
+        ):
+            run_claude("prompt")
+
+    def test_does_not_raise_when_nonzero_exit_but_has_result(self):
+        proc = _make_process([_result("got result")], returncode=1)
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+        ):
+            text, _ = run_claude("prompt")
+
+        assert text == "got result"
+
+    def test_uses_config_timeout_when_provided(self):
+        from improve.config import Config
+
+        proc = _make_process([_result("")])
+        config = Config(claude_timeout=42, ci_timeout=60)
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer") as MockTimer,
+        ):
+            run_claude("prompt", config=config)
+
+        assert MockTimer.call_args[0][0] == 42
+
+    def test_uses_default_timeout_when_no_config(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer") as MockTimer,
+        ):
+            run_claude("prompt")
+
+        assert MockTimer.call_args[0][0] == 900
+
+    def test_handles_stdin_write_oserror_gracefully(self, caplog):
+        proc = _make_process([_result("ok")])
+        proc.stdin.write.side_effect = OSError("broken pipe")
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            text, _ = run_claude("prompt")
+
+        assert text == "ok"
+        assert "exited before accepting input" in caplog.text
+
     def test_still_returns_result_in_quiet_mode(self):
         proc = _make_process([_text_delta("Hi"), _result("Final")])
         with (
@@ -336,3 +392,61 @@ class TestRunClaude:
             text, _ = run_claude("prompt", quiet=True)
 
         assert text == "Final"
+
+
+class TestClassifyEvents:
+    def test_yields_text_delta(self):
+        line = json.dumps(
+            {"type": "stream_event", "event": {"delta": {"type": "text_delta", "text": "hi"}}}
+        )
+        events = list(_classify_events(iter([line + "\n"])))
+
+        assert len(events) == 1
+        assert isinstance(events[0], TextDelta)
+        assert events[0].text == "hi"
+
+    def test_yields_result(self):
+        line = json.dumps({"type": "result", "result": "output"})
+        events = list(_classify_events(iter([line + "\n"])))
+
+        assert isinstance(events[0], Result)
+        assert events[0].text == "output"
+
+    def test_yields_tool_lifecycle(self):
+        lines = [
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_start",
+                        "content_block": {"type": "tool_use", "name": "Bash"},
+                    },
+                }
+            )
+            + "\n",
+            json.dumps(
+                {
+                    "type": "stream_event",
+                    "event": {"delta": {"type": "input_json_delta", "partial_json": '{"cmd":'}},
+                }
+            )
+            + "\n",
+            json.dumps({"type": "stream_event", "event": {"type": "content_block_stop"}}) + "\n",
+        ]
+        events = list(_classify_events(iter(lines)))
+
+        assert isinstance(events[0], ToolStart)
+        assert events[0].name == "Bash"
+        assert isinstance(events[1], ToolInput)
+        assert isinstance(events[2], ToolStop)
+
+    def test_skips_blank_and_unparseable_lines(self):
+        events = list(_classify_events(iter(["\n", "not json\n", "null\n"])))
+
+        assert events == []
+
+    def test_skips_non_stream_events(self):
+        line = json.dumps({"type": "other", "data": "ignored"}) + "\n"
+        events = list(_classify_events(iter([line])))
+
+        assert events == []

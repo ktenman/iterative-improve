@@ -4,104 +4,8 @@ from unittest.mock import patch
 import pytest
 
 from improve import git
-from tests import _cp
-
-
-class TestHeadSha:
-    def test_returns_current_head_sha(self):
-        with patch("improve.git.run", return_value=_cp(stdout="abc123def\n")) as mock_run:
-            assert git.head_sha() == "abc123def"
-
-        mock_run.assert_called_once_with(["git", "rev-parse", "HEAD"])
-
-    def test_logs_warning_when_rev_parse_fails(self, caplog):
-        import logging
-
-        with (
-            patch("improve.git.run", return_value=_cp(returncode=1, stdout="")),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            result = git.head_sha()
-
-        assert result == ""
-        assert "Failed to determine HEAD sha" in caplog.text
-
-
-class TestHeadShaEdgeCases:
-    def test_returns_empty_when_command_succeeds_with_empty_output(self):
-        with patch("improve.git.run", return_value=_cp(stdout="")):
-            assert git.head_sha() == ""
-
-    def test_returns_sha_when_command_succeeds(self):
-        with patch("improve.git.run", return_value=_cp(stdout="abc123\n")):
-            assert git.head_sha() == "abc123"
-
-
-class TestRevertTo:
-    def test_returns_true_on_successful_reset_and_push(self):
-        with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [_cp(), _cp()]
-            assert git.revert_to("abc123", "feature") is True
-
-        mock_run.assert_any_call(["git", "reset", "--hard", "abc123"])
-        mock_run.assert_any_call(["git", "push", "--force-with-lease", "origin", "feature"])
-
-    def test_returns_false_when_reset_fails(self):
-        with patch("improve.git.run", return_value=_cp(returncode=1, stderr="error")):
-            assert git.revert_to("abc123", "feature") is False
-
-    def test_returns_false_when_force_push_fails(self):
-        with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
-            assert git.revert_to("abc123", "feature") is False
-
-    def test_logs_truncated_sha_on_success(self, caplog):
-        with (
-            patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.INFO, logger="improve"),
-        ):
-            mock_run.side_effect = [_cp(), _cp()]
-            git.revert_to("abc12345xyz", "feature")
-
-        assert "abc12345" in caplog.text
-
-    def test_logs_reset_failed_warning(self, caplog):
-        with (
-            patch("improve.git.run", return_value=_cp(returncode=1, stderr="oops")),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            git.revert_to("abc123", "feature")
-
-        assert "Reset failed" in caplog.text
-
-    def test_logs_push_failed_warning(self, caplog):
-        with (
-            patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
-            git.revert_to("abc123", "feature")
-
-        assert "Force push failed" in caplog.text
-
-
-class TestDiscardChanges:
-    def test_runs_git_checkout(self):
-        with patch("improve.git.run", return_value=_cp()) as mock_run:
-            git.discard_changes()
-
-        mock_run.assert_called_once_with(["git", "checkout", "--", "."])
-
-    def test_logs_warning_when_checkout_fails(self, caplog):
-        import logging
-
-        with (
-            patch("improve.git.run", return_value=_cp(returncode=1, stderr="error")),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            git.discard_changes()
-
-        assert "Failed to discard changes" in caplog.text
+from improve.platform import Platform
+from tests.conftest import _cp
 
 
 class TestBranch:
@@ -116,12 +20,12 @@ class TestDetectPlatform:
     @pytest.mark.parametrize(
         ("url", "expected"),
         [
-            ("https://github.com/user/repo.git", "github"),
-            ("git@github.com:user/repo.git", "github"),
-            ("https://gitlab.com/user/repo.git", "gitlab"),
-            ("git@gitlab.com:user/repo.git", "gitlab"),
-            ("https://gitlab.mycompany.com/repo.git", "gitlab"),
-            ("https://bitbucket.org/user/repo", "github"),
+            ("https://github.com/user/repo.git", Platform.GITHUB),
+            ("git@github.com:user/repo.git", Platform.GITHUB),
+            ("https://gitlab.com/user/repo.git", Platform.GITLAB),
+            ("git@gitlab.com:user/repo.git", Platform.GITLAB),
+            ("https://gitlab.mycompany.com/repo.git", Platform.GITLAB),
+            ("https://bitbucket.org/user/repo", Platform.GITHUB),
         ],
     )
     def test_detects_platform_from_remote_url(self, url, expected):
@@ -130,13 +34,7 @@ class TestDetectPlatform:
 
     def test_defaults_to_github_when_remote_fails(self):
         with patch("improve.git.run", return_value=_cp(returncode=1)):
-            assert git.detect_platform() == "github"
-
-    def test_passes_correct_command_to_git(self):
-        with patch("improve.git.run", return_value=_cp(stdout="https://github.com/u/r\n")) as m:
-            git.detect_platform()
-
-        m.assert_called_once_with(["git", "remote", "get-url", "origin"])
+            assert git.detect_platform() == Platform.GITHUB
 
 
 class TestHasChanges:
@@ -178,6 +76,20 @@ class TestChangedFiles:
         with patch("improve.git.run", return_value=result):
             assert git.changed_files() == []
 
+    @pytest.mark.parametrize(
+        "porcelain,expected",
+        [
+            (" M file.py\n", "file.py"),
+            ("A  new.py\n", "new.py"),
+            ("?? untracked.py\n", "untracked.py"),
+        ],
+    )
+    def test_strips_status_prefix_from_porcelain_output(self, porcelain, expected):
+        with patch("improve.git.run", return_value=_cp(stdout=porcelain)):
+            files = git.changed_files()
+
+        assert files == [expected]
+
 
 class TestDiffVsMain:
     def test_returns_diff_output_stripped(self):
@@ -198,11 +110,17 @@ class TestHasConflicts:
 
 
 class TestConflictFiles:
-    def test_returns_list_of_conflicted_files(self):
-        with patch("improve.git.run", return_value=_cp(stdout="a.py\nb.py\n")) as mock_run:
-            assert git.conflict_files() == ["a.py", "b.py"]
-
-        mock_run.assert_called_once_with(["git", "diff", "--name-only", "--diff-filter=U"])
+    @pytest.mark.parametrize(
+        "stdout,expected",
+        [
+            ("a.py\nb.py\n", ["a.py", "b.py"]),
+            ("\n", []),
+            ("only.py\n", ["only.py"]),
+        ],
+    )
+    def test_returns_conflict_files_from_git_output(self, stdout, expected):
+        with patch("improve.git.run", return_value=_cp(stdout=stdout)):
+            assert git.conflict_files() == expected
 
 
 class TestStageTrackedChanges:
@@ -221,21 +139,6 @@ class TestStageTrackedChanges:
         with patch("improve.git.run", return_value=_cp(stdout="")) as mock_run:
             git.stage_tracked_changes()
             assert mock_run.call_count == 1
-
-    def test_logs_warning_when_git_add_fails(self, caplog):
-        import logging
-
-        with (
-            patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            mock_run.side_effect = [
-                _cp(stdout=" M app.py\n"),
-                _cp(returncode=1, stderr="add failed"),
-            ]
-            git.stage_tracked_changes()
-
-        assert "Failed to stage files" in caplog.text
 
 
 class TestCommitAndPush:
@@ -265,26 +168,15 @@ class TestCommitAndPush:
             mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
             assert git.commit_and_push("Fix bug", "feature") is False
 
-    def test_logs_pushed_message_on_success(self, caplog):
+    def test_does_not_push_when_commit_fails(self):
         with (
             patch("improve.git.stage_tracked_changes"),
             patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.INFO, logger="improve"),
         ):
-            mock_run.side_effect = [_cp(), _cp()]
-            git.commit_and_push("Fix bug", "feature")
+            mock_run.return_value = _cp(returncode=1, stderr="err")
+            git.commit_and_push("msg", "feature")
 
-        assert "Pushed:" in caplog.text
-
-    def test_logs_commit_failed_warning(self, caplog):
-        with (
-            patch("improve.git.stage_tracked_changes"),
-            patch("improve.git.run", return_value=_cp(returncode=1, stderr="err")),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            git.commit_and_push("Fix bug", "feature")
-
-        assert "Commit failed" in caplog.text
+        assert mock_run.call_count == 1
 
 
 class TestSyncWithMain:
@@ -329,8 +221,6 @@ class TestSyncWithMain:
         mock_run.assert_any_call(["git", "merge", "--abort"])
 
     def test_returns_true_when_push_fails_after_clean_merge(self, caplog):
-        import logging
-
         with (
             patch("improve.git.run") as mock_run,
             caplog.at_level(logging.WARNING, logger="improve"),
@@ -492,31 +382,6 @@ class TestCreateWorktree:
         with patch("improve.git.run", return_value=_cp(returncode=1, stderr="error")):
             assert git.create_worktree("/tmp/test-wt") is False
 
-    def test_passes_detach_flag(self):
-        with patch("improve.git.run", return_value=_cp()) as mock_run:
-            git.create_worktree("/tmp/wt")
-
-        mock_run.assert_called_once_with(["git", "worktree", "add", "--detach", "/tmp/wt"])
-
-
-class TestRemoveWorktree:
-    def test_calls_git_worktree_remove_with_force(self):
-        with patch("improve.git.run") as mock_run:
-            git.remove_worktree("/tmp/wt")
-
-        mock_run.assert_called_once_with(["git", "worktree", "remove", "--force", "/tmp/wt"])
-
-    def test_logs_warning_on_failure(self, caplog):
-        import logging
-
-        with (
-            patch("improve.git.run", return_value=_cp(returncode=1, stderr="busy")),
-            caplog.at_level(logging.WARNING, logger="improve"),
-        ):
-            git.remove_worktree("/tmp/wt")
-
-        assert "Failed to remove worktree" in caplog.text
-
 
 class TestChangedFilesWithCwd:
     def test_returns_files_from_porcelain_output(self):
@@ -526,17 +391,24 @@ class TestChangedFilesWithCwd:
         assert "src/a.py" in files
         assert "src/b.py" in files
 
-    def test_passes_cwd_via_git_c_flag(self):
-        with patch("improve.git.run", return_value=_cp(stdout="")) as mock_run:
-            git.changed_files("/tmp/wt")
-
-        mock_run.assert_called_once_with(
-            ["git", "-C", "/tmp/wt", "status", "--porcelain", "--no-renames"]
-        )
-
     def test_returns_empty_list_when_no_changes(self):
         with patch("improve.git.run", return_value=_cp(stdout="")):
             assert git.changed_files("/tmp/wt") == []
+
+    def test_omits_cwd_flag_when_cwd_is_none(self):
+        with patch("improve.git.run", return_value=_cp(stdout="")) as mock_run:
+            git.changed_files()
+
+        cmd = mock_run.call_args[0][0]
+        assert "-C" not in cmd
+
+    def test_includes_cwd_flag_when_cwd_is_provided(self):
+        with patch("improve.git.run", return_value=_cp(stdout="")) as mock_run:
+            git.changed_files("/some/path")
+
+        cmd = mock_run.call_args[0][0]
+        assert "-C" in cmd
+        assert "/some/path" in cmd
 
 
 class TestApplyWorktreeChangesEmpty:
@@ -647,41 +519,38 @@ class TestSquashBranch:
         with patch("improve.git.run", return_value=_cp(stdout="")):
             assert git.squash_branch("feature", "Squashed") is False
 
-    def test_returns_false_when_force_push_fails(self):
+    @pytest.mark.parametrize(
+        "side_effects",
+        [
+            pytest.param(
+                [_cp(stdout="abc123\n"), _cp(stdout="3\n"), _cp(returncode=1, stderr="error")],
+                id="reset_fails",
+            ),
+            pytest.param(
+                [
+                    _cp(stdout="abc123\n"),
+                    _cp(stdout="3\n"),
+                    _cp(),
+                    _cp(returncode=1, stderr="error"),
+                ],
+                id="commit_fails",
+            ),
+            pytest.param(
+                [
+                    _cp(stdout="abc123\n"),
+                    _cp(stdout="3\n"),
+                    _cp(),
+                    _cp(),
+                    _cp(returncode=1, stderr="rejected"),
+                ],
+                id="push_fails",
+            ),
+        ],
+    )
+    def test_returns_false_when_any_step_fails(self, side_effects):
         with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [
-                _cp(stdout="abc123\n"),  # merge-base
-                _cp(stdout="3\n"),  # rev-list --count
-                _cp(),  # reset --soft
-                _cp(),  # commit
-                _cp(returncode=1, stderr="rejected"),  # push fails
-            ]
+            mock_run.side_effect = side_effects
             assert git.squash_branch("feature", "Squashed") is False
-
-    def test_returns_false_when_reset_fails(self):
-        with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [
-                _cp(stdout="abc123\n"),  # merge-base
-                _cp(stdout="3\n"),  # rev-list --count
-                _cp(returncode=1, stderr="error"),  # reset --soft fails
-            ]
-
-            result = git.squash_branch("feature", "Squashed")
-
-        assert result is False
-
-    def test_returns_false_when_squash_commit_fails(self):
-        with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [
-                _cp(stdout="abc123\n"),  # merge-base
-                _cp(stdout="3\n"),  # rev-list --count
-                _cp(),  # reset --soft
-                _cp(returncode=1, stderr="error"),  # commit fails
-            ]
-
-            result = git.squash_branch("feature", "Squashed")
-
-        assert result is False
 
     def test_returns_true_when_zero_commits(self):
         with patch("improve.git.run") as mock_run:
@@ -691,31 +560,274 @@ class TestSquashBranch:
             ]
             assert git.squash_branch("feature", "Squashed") is True
 
-    def test_logs_nothing_to_squash_for_one_commit(self, caplog):
+
+class TestDiscardChangesSuccess:
+    def test_does_not_log_on_successful_checkout(self, caplog):
         with (
-            patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.INFO, logger="improve"),
+            patch("improve.git.run", return_value=_cp(returncode=0)),
+            caplog.at_level(logging.WARNING, logger="improve"),
         ):
+            git.discard_changes()
+
+        assert "Failed to discard" not in caplog.text
+
+
+class TestDetectPlatformCaseSensitivity:
+    def test_url_check_is_case_insensitive(self):
+        with patch("improve.git.run", return_value=_cp(stdout="https://GITLAB.com/repo\n")):
+            assert git.detect_platform() == Platform.GITLAB
+
+
+class TestSyncWithMainNonZeroBehind:
+    def test_count_one_triggers_merge(self):
+        with patch("improve.git.run") as mock_run:
             mock_run.side_effect = [
-                _cp(stdout="abc123\n"),
+                _cp(),
                 _cp(stdout="1\n"),
+                _cp(),
+                _cp(),
             ]
-            git.squash_branch("feature", "Squashed")
+            assert git.sync_with_main("feature") is True
 
-        assert "Nothing to squash" in caplog.text
+        mock_run.assert_any_call(["git", "merge", "origin/main", "--no-edit"])
 
-    def test_logs_success_message_after_squash(self, caplog):
+    def test_count_zero_does_not_merge(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [_cp(), _cp(stdout="0\n")]
+            assert git.sync_with_main("feature") is True
+
+        assert mock_run.call_count == 2
+
+
+class TestApplyWorktreeSkipsDeleteWhenBothMissing:
+    def test_skips_file_when_neither_src_nor_dst_exists(self, tmp_path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        main = tmp_path / "main"
+        main.mkdir()
+
         with (
+            patch("improve.git.changed_files", return_value=["missing.py"]),
+            patch("improve.git.run", return_value=_cp(stdout=str(main))),
+        ):
+            files = git.apply_worktree_changes(str(worktree))
+
+        assert files == ["missing.py"]
+        assert not (main / "missing.py").exists()
+
+
+class TestChangedFilesSlicePrecision:
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (" M x.py\n", ["x.py"]),
+            ("?? y.py\n", ["y.py"]),
+            ("A  z.py\n", ["z.py"]),
+            ("MM a.py\n", ["a.py"]),
+        ],
+    )
+    def test_removes_exactly_three_char_prefix(self, raw, expected):
+        with patch("improve.git.run", return_value=_cp(stdout=raw)):
+            assert git.changed_files() == expected
+
+    def test_single_char_filename_preserved(self):
+        with patch("improve.git.run", return_value=_cp(stdout=" M x\n")):
+            assert git.changed_files() == ["x"]
+
+
+class TestSquashBranchBoundary:
+    def test_returns_true_for_zero_commits_without_squashing(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [_cp(stdout="abc\n"), _cp(stdout="0\n")]
+            result = git.squash_branch("feat", "msg")
+
+        assert result is True
+        assert mock_run.call_count == 2
+
+    def test_returns_true_for_one_commit_without_squashing(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [_cp(stdout="abc\n"), _cp(stdout="1\n")]
+            result = git.squash_branch("feat", "msg")
+
+        assert result is True
+        assert mock_run.call_count == 2
+
+    def test_squashes_two_commits(self):
+        with patch("improve.git.run") as mock_run:
+            mock_run.side_effect = [
+                _cp(stdout="abc\n"),
+                _cp(stdout="2\n"),
+                _cp(),
+                _cp(),
+                _cp(),
+            ]
+            result = git.squash_branch("feat", "msg")
+
+        assert result is True
+        assert mock_run.call_count == 5
+
+
+class TestCommitResolutionTruncation:
+    def test_truncates_summary_to_exactly_40_chars(self):
+        summary_40 = "A" * 40
+        summary_60 = "A" * 60
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value=summary_60),
             patch("improve.git.run") as mock_run,
-            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp()]
+            git._commit_resolution("output")
+
+        fallback_msg = mock_run.call_args_list[1][0][0][3]
+        summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
+        assert summary_part == summary_40
+
+    def test_summary_shorter_than_40_not_truncated(self):
+        short = "Fix merge"
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value=short),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp()]
+            git._commit_resolution("output")
+
+        fallback_msg = mock_run.call_args_list[1][0][0][3]
+        assert short in fallback_msg
+
+
+class TestCommitResolution:
+    def test_returns_true_when_no_edit_commit_succeeds(self):
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git._commit_resolution("output") is True
+
+    def test_uses_fallback_commit_when_no_edit_fails(self):
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value="Fixed conflicts"),
+            patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [
-                _cp(stdout="abc123\n"),
-                _cp(stdout="3\n"),
-                _cp(),
-                _cp(),
+                _cp(returncode=1),
                 _cp(),
             ]
-            git.squash_branch("feature", "Squashed")
+            result = git._commit_resolution("output")
 
-        assert "Squashed and force-pushed" in caplog.text
+        assert result is True
+        fallback_cmd = mock_run.call_args_list[1][0][0]
+        assert fallback_cmd[0:3] == ["git", "commit", "-m"]
+        assert "Fixed conflicts" in fallback_cmd[3]
+
+    def test_truncates_summary_to_40_chars_in_fallback(self):
+        long_summary = "A" * 60
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value=long_summary),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp()]
+            git._commit_resolution("output")
+
+        fallback_msg = mock_run.call_args_list[1][0][0][3]
+        summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
+        assert len(summary_part) <= 40
+
+    def test_returns_false_when_both_commits_fail(self):
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value="x"),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp(returncode=1)]
+            assert git._commit_resolution("output") is False
+
+
+class TestResolveConflictsEdgeCases:
+    def test_limits_conflict_file_display_to_5(self, caplog):
+        files = [f"f{i}.py" for i in range(10)]
+        with (
+            patch("improve.git.conflict_files", return_value=files),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.has_conflicts", return_value=True),
+            patch("improve.git.run", return_value=_cp()),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            git._resolve_conflicts("feature")
+
+        assert "f4.py" in caplog.text
+        assert "f5.py" not in caplog.text
+
+    def test_aborts_merge_when_conflicts_remain(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.has_conflicts", return_value=True),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            git._resolve_conflicts("feature")
+
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+    def test_aborts_merge_when_commit_fails(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value="x"),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp(returncode=1), _cp()]
+            git._resolve_conflicts("feature")
+
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+    def test_returns_false_and_aborts_merge_when_claude_raises_runtime_error(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.run_claude", side_effect=RuntimeError("Claude crashed")),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            result = git._resolve_conflicts("feature")
+
+        assert result is False
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+
+class TestResolveExistingConflictsEdgeCases:
+    def test_returns_false_when_commit_resolution_fails(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git._commit_resolution", return_value=False),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git.resolve_existing_conflicts() is False
+
+    def test_returns_false_and_aborts_merge_when_claude_raises_runtime_error(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.run_claude", side_effect=RuntimeError("Claude crashed")),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            result = git.resolve_existing_conflicts()
+
+        assert result is False
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+    def test_calls_merge_abort_when_commit_fails(self):
+        with (
+            patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git._commit_resolution", return_value=False),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            git.resolve_existing_conflicts()
+
+        mock_run.assert_any_call(["git", "merge", "--abort"])

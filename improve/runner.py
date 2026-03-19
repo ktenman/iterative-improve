@@ -4,9 +4,10 @@ import logging
 import signal
 import sys
 import time
-from dataclasses import replace
 
 from improve import ci, claude, color, git
+from improve.config import Config
+from improve.mode import Mode
 from improve.parallel import run_parallel_batch
 from improve.phases import (
     build_ci_fix_prompt,
@@ -17,7 +18,7 @@ from improve.phases import (
     strip_code_fences,
 )
 from improve.process import format_duration
-from improve.state import LoopState, PhaseResult, format_summary
+from improve.state import CIFixResult, LoopState, PhaseResult, format_summary
 
 logger = logging.getLogger("improve")
 
@@ -29,19 +30,17 @@ class IterationLoop:
         self,
         state: LoopState,
         skip_ci: bool,
-        batch: bool,
+        mode: Mode,
         phases: list[str],
+        config: Config,
         squash: bool = False,
-        parallel: bool = False,
-        revert_on_fail: bool = False,
         continuous: bool = False,
     ):
         self.state = state
         self.skip_ci = skip_ci
-        self.batch = batch
+        self.mode = mode
+        self.config = config
         self.squash = squash
-        self.parallel = parallel
-        self.revert_on_fail = revert_on_fail
         self.continuous = continuous
         self.loop_start: float = 0.0
         self._active_phases: list[str] = list(phases)
@@ -67,37 +66,41 @@ class IterationLoop:
             logger.warning("signal] Failed to print summary during shutdown", exc_info=True)
         sys.exit(130)
 
-    def retry_ci_fixes(
-        self, ci_passed: bool, ci_errors: str, commit_prefix: str
-    ) -> tuple[bool, int, float, float]:
+    def retry_ci_fixes(self, ci_passed: bool, ci_errors: str, commit_prefix: str) -> CIFixResult:
         total_claude = 0.0
         total_ci = 0.0
         retries = 0
         while not ci_passed and retries < MAX_CI_RETRIES:
             retries += 1
             logger.info("ci-fix] Attempt %d/%d...", retries, MAX_CI_RETRIES)
-            _, claude_time = claude.run_claude(build_ci_fix_prompt(ci_errors))
+            try:
+                _, claude_time = claude.run_claude(
+                    build_ci_fix_prompt(ci_errors), config=self.config
+                )
+            except RuntimeError:
+                logger.warning("ci-fix] Claude failed, stopping retries", exc_info=True)
+                break
             total_claude += claude_time
             if not git.has_changes():
                 logger.info("ci-fix] No fix produced")
                 break
-            pre_push_id = ci.get_latest_run_id(self.state.branch)
+            pre_push_id = ci.get_latest_run_id(self.state.branch, self.config)
             if not git.commit_and_push(f"{commit_prefix} (attempt {retries})", self.state.branch):
                 logger.warning("ci-fix] Push failed")
                 break
             ci_passed, ci_errors, ci_time = ci.wait_for_ci(
-                self.state.branch, known_previous_id=pre_push_id
+                self.state.branch, self.config, known_previous_id=pre_push_id
             )
             total_ci += ci_time
         if not ci_passed and retries >= MAX_CI_RETRIES:
             logger.warning("ci-fix] All %d attempts exhausted, CI still failing", MAX_CI_RETRIES)
-        return ci_passed, retries, total_claude, total_ci
+        return CIFixResult(ci_passed, retries, total_claude, total_ci)
 
     def run_phase(self, phase: str, iteration: int, skip_ci: bool) -> PhaseResult:
         phase_start = time.monotonic()
         prompt = build_phase_prompt(phase, git.diff_vs_main(), self.state.context())
         logger.info("%s] Running...", phase)
-        output, total_claude = claude.run_claude(prompt)
+        output, total_claude = claude.run_claude(prompt, config=self.config)
         files = git.changed_files()
         if not files:
             logger.info("%s] No changes", phase)
@@ -106,13 +109,13 @@ class IterationLoop:
         summary = extract_summary(output)
         logger.info("%s] Changed %d file(s): %s", phase, len(files), ", ".join(files[:5]))
 
-        pre_push_id = ci.get_latest_run_id(self.state.branch) if not skip_ci else None
+        pre_push_id = ci.get_latest_run_id(self.state.branch, self.config) if not skip_ci else None
         pushed = git.commit_and_push(build_commit_message(phase, summary), self.state.branch)
         ci_passed, total_ci, retries = pushed, 0.0, 0
 
         if pushed and not skip_ci:
             ci_passed, ci_errors, total_ci = ci.wait_for_ci(
-                self.state.branch, known_previous_id=pre_push_id
+                self.state.branch, self.config, known_previous_id=pre_push_id
             )
             ci_passed, retries, fix_claude, fix_ci = self.retry_ci_fixes(
                 ci_passed, ci_errors, f"Fix CI after {phase}"
@@ -163,8 +166,9 @@ class IterationLoop:
         )
 
     def run_batch_iteration(self, iteration: int) -> bool:
-        pre_sha = git.head_sha() if self.revert_on_fail else ""
-        pre_batch_run_id = ci.get_latest_run_id(self.state.branch) if not self.skip_ci else None
+        pre_batch_run_id = (
+            ci.get_latest_run_id(self.state.branch, self.config) if not self.skip_ci else None
+        )
         results = []
         for phase in self._active_phases:
             result = self._run_phase_safe(phase, iteration, skip_ci=True)
@@ -185,23 +189,15 @@ class IterationLoop:
 
         ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
             self.state.branch,
+            self.config,
             known_previous_id=pre_batch_run_id,
         )
         ci_passed, *_ = self.retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
-        if ci_passed:
-            return True
-        if not (self.revert_on_fail and pre_sha):
+        if not ci_passed:
             logger.warning("loop] Stopping: CI failed")
-            return False
-        logger.info("loop] Reverting batch changes (CI failed)")
-        if not git.revert_to(pre_sha, self.state.branch):
-            logger.warning("loop] Revert failed, changes may be in inconsistent state")
-            return False
-        self.state.mark_recent_reverted(len(results))
-        return True
+        return ci_passed
 
     def run_parallel_batch_iteration(self, iteration: int) -> bool:
-        pre_sha = git.head_sha() if self.revert_on_fail else ""
         phase_results: list[PhaseResult] = []
 
         def _track_result(result: PhaseResult) -> None:
@@ -216,31 +212,19 @@ class IterationLoop:
             skip_ci=self.skip_ci,
             add_result=_track_result,
             retry_ci_fixes=self.retry_ci_fixes,
-            revert_sha=pre_sha,
+            config=self.config,
         )
         self._drop_converged_phases(phase_results)
-        if pre_sha and keep_going and git.head_sha() == pre_sha:
-            self.state.mark_recent_reverted(len(phase_results))
         return keep_going
 
     def run_sequential_iteration(self, iteration: int) -> bool:
         results = []
         for phase in self._active_phases:
-            pre_sha = git.head_sha() if self.revert_on_fail else ""
             result = self._run_phase_safe(phase, iteration, self.skip_ci)
-
-            if not result.ci_passed and self.revert_on_fail and pre_sha:
-                logger.info("loop] Reverting %s changes (CI failed)", phase)
-                if not git.revert_to(pre_sha, self.state.branch):
-                    logger.warning("loop] Revert failed for %s, stopping", phase)
-                    self.state.add(result)
-                    return False
-                result = replace(result, reverted=True)
-
             self.state.add(result)
             results.append(result)
 
-            if not result.ci_passed and not self.revert_on_fail:
+            if not result.ci_passed:
                 logger.warning("loop] Stopping: CI failed after %s", phase)
                 return False
 
@@ -256,7 +240,13 @@ class IterationLoop:
             logger.info("loop] No changes to squash")
             return
         prompt, fallback = build_squash_prompt(git.diff_vs_main(), kept)
-        output, _ = claude.run_claude(prompt, quiet=True)
+        try:
+            output, _ = claude.run_claude(prompt, quiet=True, config=self.config)
+        except RuntimeError:
+            logger.warning(
+                "loop] Claude failed during squash, using fallback message", exc_info=True
+            )
+            output = ""
         message = strip_code_fences(output) or fallback
         if git.squash_branch(self.state.branch, message):
             logger.info("loop] Squashed all commits into one")
@@ -277,9 +267,9 @@ class IterationLoop:
                 logger.error("loop] Merge conflict could not be resolved, stopping")
                 break
 
-            if self.parallel:
+            if self.mode == Mode.PARALLEL:
                 keep_going = self.run_parallel_batch_iteration(i)
-            elif self.batch:
+            elif self.mode == Mode.BATCH:
                 keep_going = self.run_batch_iteration(i)
             else:
                 keep_going = self.run_sequential_iteration(i)

@@ -9,9 +9,10 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from improve import ci, claude, git
+from improve.config import Config
 from improve.phases import build_commit_message, build_phase_prompt, extract_summary
 from improve.process import format_duration
-from improve.state import PhaseResult
+from improve.state import CIFixResult, PhaseResult
 
 logger = logging.getLogger("improve")
 
@@ -22,11 +23,12 @@ def run_phase_in_worktree(
     worktree_path: str,
     branch_diff: str,
     context: str,
+    config: Config,
 ) -> PhaseResult:
     phase_start = time.monotonic()
     prompt = build_phase_prompt(phase, branch_diff, context)
     logger.info("%s] Running in worktree...", phase)
-    output, total_claude = claude.run_claude(prompt, cwd=worktree_path, quiet=True)
+    output, total_claude = claude.run_claude(prompt, cwd=worktree_path, quiet=True, config=config)
     files = git.changed_files(worktree_path)
     elapsed = time.monotonic() - phase_start
     if not files:
@@ -64,24 +66,18 @@ def _collect_results(
 def _check_ci_after_batch(
     branch: str,
     pre_batch_run_id: int | None,
-    retry_ci_fixes: Callable[..., tuple[bool, int, float, float]],
-    revert_sha: str,
+    retry_ci_fixes: Callable[..., CIFixResult],
+    config: Config,
 ) -> bool:
     ci_passed, ci_errors, _ci_time = ci.wait_for_ci(
         branch,
+        config,
         known_previous_id=pre_batch_run_id,
     )
     ci_passed, *_ = retry_ci_fixes(ci_passed, ci_errors, "Fix CI")
-    if ci_passed:
-        return True
-    if revert_sha:
-        logger.info("loop] Reverting parallel batch changes (CI failed)")
-        if not git.revert_to(revert_sha, branch):
-            logger.warning("loop] Revert failed, changes may be in inconsistent state")
-            return False
-        return True
-    logger.warning("loop] Stopping: CI failed")
-    return False
+    if not ci_passed:
+        logger.warning("loop] Stopping: CI failed")
+    return ci_passed
 
 
 def run_parallel_batch(
@@ -91,11 +87,11 @@ def run_parallel_batch(
     context: str,
     skip_ci: bool,
     add_result: Callable[[PhaseResult], None],
-    retry_ci_fixes: Callable[..., tuple[bool, int, float, float]],
-    revert_sha: str = "",
+    retry_ci_fixes: Callable[..., CIFixResult],
+    config: Config,
 ) -> bool:
     branch_diff = git.diff_vs_main()
-    pre_batch_run_id = ci.get_latest_run_id(branch) if not skip_ci else None
+    pre_batch_run_id = ci.get_latest_run_id(branch, config) if not skip_ci else None
 
     base_dir = tempfile.mkdtemp(prefix="improve-")
 
@@ -116,6 +112,7 @@ def run_parallel_batch(
                     worktrees[phase],
                     branch_diff,
                     context,
+                    config,
                 )
                 for phase in phases
             ]
@@ -159,9 +156,7 @@ def run_parallel_batch(
             logger.warning("loop] Stopping: push failed")
             return False
 
-        return skip_ci or _check_ci_after_batch(
-            branch, pre_batch_run_id, retry_ci_fixes, revert_sha
-        )
+        return skip_ci or _check_ci_after_batch(branch, pre_batch_run_id, retry_ci_fixes, config)
     finally:
         for path in worktrees.values():
             git.remove_worktree(path)

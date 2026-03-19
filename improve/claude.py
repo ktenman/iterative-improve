@@ -8,17 +8,18 @@ import sys
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
+from typing import NamedTuple
 
+from improve.config import Config
 from improve.process import format_duration
 
 logger = logging.getLogger("improve")
 
-CLAUDE_TIMEOUT = 900
 
-
-def set_timeout(seconds: int) -> None:
-    global CLAUDE_TIMEOUT
-    CLAUDE_TIMEOUT = seconds
+class ClaudeResult(NamedTuple):
+    text: str
+    elapsed: float
 
 
 _active_processes: set[subprocess.Popen] = set()
@@ -74,12 +75,34 @@ def _summarize_tool_input(tool: str, raw_json: str) -> str:
     return f"{tool} > {truncated}"
 
 
-def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool]:
-    result_text = ""
-    has_streamed = False
-    current_tool = ""
-    tool_input_chunks: list[str] = []
+@dataclass
+class TextDelta:
+    text: str
 
+
+@dataclass
+class ToolStart:
+    name: str
+
+
+@dataclass
+class ToolInput:
+    partial_json: str
+
+
+@dataclass
+class ToolStop:
+    pass
+
+
+@dataclass
+class Result:
+    text: str
+
+
+def _classify_events(
+    stdout: Iterator[str],
+) -> Iterator[TextDelta | ToolStart | ToolInput | ToolStop | Result]:
     for line in stdout:
         line = line.strip()
         if not line:
@@ -94,7 +117,7 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
 
         event_type = event.get("type", "")
         if event_type == "result":
-            result_text = event.get("result", "")
+            yield Result(event.get("result", ""))
             continue
         if event_type != "stream_event":
             continue
@@ -105,22 +128,40 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
         delta_type = delta.get("type")
 
         if delta_type == "text_delta":
-            if not quiet:
-                sys.stdout.write(delta.get("text", ""))
-                sys.stdout.flush()
-                has_streamed = True
+            yield TextDelta(delta.get("text", ""))
         elif delta_type == "input_json_delta":
-            tool_input_chunks.append(delta.get("partial_json", ""))
+            yield ToolInput(delta.get("partial_json", ""))
         elif inner_type == "content_block_start":
             block = inner.get("content_block") or {}
-            if block.get("type") != "tool_use":
-                continue
+            if block.get("type") == "tool_use":
+                yield ToolStart(block.get("name", "?"))
+        elif inner_type == "content_block_stop":
+            yield ToolStop()
+
+
+def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool]:
+    result_text = ""
+    has_streamed = False
+    current_tool = ""
+    tool_input_chunks: list[str] = []
+
+    for event in _classify_events(stdout):
+        if isinstance(event, Result):
+            result_text = event.text
+        elif isinstance(event, TextDelta):
+            if not quiet:
+                sys.stdout.write(event.text)
+                sys.stdout.flush()
+                has_streamed = True
+        elif isinstance(event, ToolStart):
             if has_streamed:
                 sys.stdout.write("\n")
                 has_streamed = False
-            current_tool = block.get("name", "?")
+            current_tool = event.name
             tool_input_chunks = []
-        elif inner_type == "content_block_stop" and current_tool:
+        elif isinstance(event, ToolInput):
+            tool_input_chunks.append(event.partial_json)
+        elif isinstance(event, ToolStop) and current_tool:
             detail = _summarize_tool_input(current_tool, "".join(tool_input_chunks))
             logger.info("claude] %s", detail)
             current_tool = ""
@@ -128,10 +169,7 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
     return result_text, has_streamed
 
 
-def run_claude(prompt: str, cwd: str | None = None, quiet: bool = False) -> tuple[str, float]:
-    logger.info("claude] Running...")
-    logger.debug("claude] prompt length: %d chars", len(prompt))
-    start = time.monotonic()
+def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
     process = subprocess.Popen(
         [
             "claude",
@@ -159,21 +197,34 @@ def run_claude(prompt: str, cwd: str | None = None, quiet: bool = False) -> tupl
         logger.warning("claude] Process exited before accepting input")
     with contextlib.suppress(OSError):
         process.stdin.close()
+    return process
 
-    def _terminate_on_timeout() -> None:
-        logger.warning("claude] Timeout after %ds, terminating", CLAUDE_TIMEOUT)
+
+def _setup_timeout(process: subprocess.Popen, timeout: int) -> threading.Timer:
+    def _on_timeout() -> None:
+        logger.warning("claude] Timeout after %ds, terminating", timeout)
         _terminate_process(process)
 
-    timer = threading.Timer(CLAUDE_TIMEOUT, _terminate_on_timeout)
+    timer = threading.Timer(timeout, _on_timeout)
     timer.daemon = True
     timer.start()
+    return timer
 
+
+def run_claude(
+    prompt: str, cwd: str | None = None, quiet: bool = False, config: Config | None = None
+) -> ClaudeResult:
+    logger.info("claude] Running...")
+    logger.debug("claude] prompt length: %d chars", len(prompt))
+    start = time.monotonic()
+    timeout = config.claude_timeout if config else 900
+
+    process = _start_claude(prompt, cwd)
+    timer = _setup_timeout(process, timeout)
     stderr_lines: list[str] = []
-
-    def _drain_stderr() -> None:
-        stderr_lines.extend(process.stderr)
-
-    stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_thread = threading.Thread(
+        target=lambda: stderr_lines.extend(process.stderr), daemon=True
+    )
     stderr_thread.start()
 
     result_text = ""
@@ -197,9 +248,12 @@ def run_claude(prompt: str, cwd: str | None = None, quiet: bool = False) -> tupl
     stderr = "".join(stderr_lines)
     elapsed = time.monotonic() - start
 
-    if process.returncode != 0 and stderr:
-        logger.warning("claude] stderr: %s", stderr[:300])
+    if process.returncode != 0:
+        if stderr:
+            logger.warning("claude] stderr: %s", stderr[:300])
+        if not result_text:
+            raise RuntimeError(f"Claude exited with code {process.returncode}: {stderr[:200]}")
 
     logger.info("claude] Done in %s", format_duration(elapsed))
     logger.debug("claude] output length: %d chars", len(result_text))
-    return result_text, elapsed
+    return ClaudeResult(result_text, elapsed)

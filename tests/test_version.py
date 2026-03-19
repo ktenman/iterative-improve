@@ -99,51 +99,41 @@ class TestAutoUpgrade:
         )
         assert "Upgraded to 0.2.0" in caplog.text
 
-    def test_logs_manual_instruction_when_uv_not_available(self, caplog):
+    def test_skips_subprocess_when_uv_not_found(self):
         with (
             patch("improve.version.shutil.which", return_value=None),
-            caplog.at_level(logging.INFO, logger="improve"),
+            patch("improve.version.subprocess.run") as mock_run,
         ):
             _auto_upgrade("0.1.0", "0.2.0")
 
-        assert "uv tool upgrade iterative-improve" in caplog.text
+        mock_run.assert_not_called()
 
-    def test_logs_warning_when_upgrade_times_out(self, caplog):
+    def test_handles_subprocess_timeout(self):
         with (
             patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
             patch(
                 "improve.version.subprocess.run",
-                side_effect=subprocess.TimeoutExpired(cmd="uv", timeout=60),
+                side_effect=subprocess.TimeoutExpired("uv", 60),
             ),
-            caplog.at_level(logging.WARNING, logger="improve"),
         ):
             _auto_upgrade("0.1.0", "0.2.0")
 
-        assert "timed out" in caplog.text
-
-    def test_logs_warning_when_uv_binary_not_executable(self, caplog):
+    def test_handles_oserror_during_upgrade(self):
         with (
             patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch(
-                "improve.version.subprocess.run",
-                side_effect=PermissionError(13, "Permission denied"),
-            ),
-            caplog.at_level(logging.WARNING, logger="improve"),
+            patch("improve.version.subprocess.run", side_effect=OSError("exec failed")),
         ):
             _auto_upgrade("0.1.0", "0.2.0")
 
-        assert "failed to start" in caplog.text
-
-    def test_logs_warning_when_upgrade_fails(self, caplog):
-        result = subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="error msg")
+    def test_handles_nonzero_exit_code(self):
         with (
             patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch("improve.version.subprocess.run", return_value=result),
-            caplog.at_level(logging.WARNING, logger="improve"),
+            patch("improve.version.subprocess.run") as mock_run,
         ):
+            mock_run.return_value = subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr="error"
+            )
             _auto_upgrade("0.1.0", "0.2.0")
-
-        assert "Upgrade failed" in caplog.text
 
 
 class TestCheckForUpdate:

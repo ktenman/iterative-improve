@@ -6,9 +6,12 @@ import sys
 import threading
 from datetime import datetime
 
-from improve import ci, claude, color, git
+from improve import color, git
 from improve.ci_glab import GitLabCI
+from improve.config import Config
+from improve.mode import Mode
 from improve.phases import AVAILABLE_PHASES
+from improve.platform import Platform
 from improve.process import require_tools, run_preflight
 from improve.runner import IterationLoop
 from improve.state import LOG_FILE, STATE_DIR, LoopState
@@ -73,11 +76,6 @@ def _parse_args() -> argparse.Namespace:
         help="CI provider (default: auto-detect from git remote)",
     )
     parser.add_argument(
-        "--revert-on-fail",
-        action="store_true",
-        help="Revert changes that fail CI instead of stopping",
-    )
-    parser.add_argument(
         "--phase-timeout",
         type=int,
         default=900,
@@ -108,10 +106,8 @@ def main() -> None:
     color.init(force_no_color=args.no_color)
     _setup_logging()
     threading.Thread(target=check_for_update, daemon=True).start()
-    platform = args.ci_provider or git.detect_platform()
-    if platform == "gitlab":
-        ci.set_provider(GitLabCI())
-    ci_tool = "glab" if platform == "gitlab" else "gh"
+    platform = Platform(args.ci_provider) if args.ci_provider else git.detect_platform()
+    ci_tool = "glab" if platform == Platform.GITLAB else "gh"
     require_tools(ci_tool)
 
     if args.iterations is not None and args.iterations < 1:
@@ -123,8 +119,12 @@ def main() -> None:
     if args.phase_timeout < 30:
         logger.error("loop] Phase timeout must be at least 30 seconds")
         sys.exit(1)
-    ci.set_timeout(args.ci_timeout)
-    claude.set_timeout(args.phase_timeout)
+    config = Config(
+        claude_timeout=args.phase_timeout,
+        ci_timeout=args.ci_timeout * 60,
+    )
+    if platform == Platform.GITLAB:
+        config.ci_provider = GitLabCI()
     phases = _validate_phases(args.phases)
 
     current_branch = git.branch()
@@ -158,19 +158,23 @@ def main() -> None:
         else:
             logger.info("loop] No matching state to resume, starting fresh")
 
+    if args.parallel:
+        mode = Mode.PARALLEL
+    elif args.batch:
+        mode = Mode.BATCH
+    else:
+        mode = Mode.SEQUENTIAL
+
     loop = IterationLoop(
         state=state,
         skip_ci=args.skip_ci,
-        batch=args.batch,
+        mode=mode,
         phases=phases,
+        config=config,
         squash=args.squash,
-        parallel=args.parallel,
-        revert_on_fail=args.revert_on_fail,
         continuous=continuous,
     )
     loop.install_signal_handlers()
-
-    mode = "parallel" if args.parallel else ("batch" if args.batch else "sequential")
     iter_display = "continuous" if continuous else f"{start_iteration}-{max_iterations}"
     border = color.separator()
     header = (
@@ -179,21 +183,19 @@ def main() -> None:
         f"  Branch:     {color.wrap(current_branch, color.BOLD_WHITE)}\n"
         f"  Iterations: {iter_display}\n"
         f"  Phases:     {', '.join(phases)}\n"
-        f"  Mode:       {mode}\n"
+        f"  Mode:       {mode.value}\n"
         f"  CI:         {'skip' if args.skip_ci else f'{args.ci_timeout}m timeout'}\n"
-        f"  Revert:     {'yes' if args.revert_on_fail else 'no'}\n"
         f"  Squash:     {'yes' if args.squash else 'no'}\n"
         f"{border}"
     )
     print(header)
     logger.info(
-        "loop] Started: branch=%s iterations=%s phases=%s mode=%s skip_ci=%s revert=%s",
+        "loop] Started: branch=%s iterations=%s phases=%s mode=%s skip_ci=%s",
         current_branch,
         iter_display,
         ",".join(phases),
-        mode,
+        mode.value,
         args.skip_ci,
-        args.revert_on_fail,
     )
 
     if not git.sync_with_main(current_branch):
