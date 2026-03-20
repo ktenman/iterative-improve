@@ -1011,3 +1011,32 @@ class TestRunPhaseDetails:
 
         assert result.claude_seconds == 5.0
         assert result.ci_seconds == 9.0
+
+
+class TestCheckConvergence:
+    def test_returns_true_when_no_changes_in_any_result(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult(1, "simplify", False, [], "No changes needed", True, 0),
+            PhaseResult(1, "review", False, [], "No changes needed", True, 0),
+        ]
+
+        assert loop._check_convergence(results) is True
+
+    def test_returns_false_when_changes_exist(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify"])
+        results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
+
+        assert loop._check_convergence(results) is False
+
+    def test_drops_converged_phases(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult(1, "simplify", False, [], "No changes needed", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+        ]
+
+        loop._check_convergence(results)
+
+        assert "simplify" not in loop._active_phases
+        assert "review" in loop._active_phases

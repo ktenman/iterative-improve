@@ -1,7 +1,13 @@
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
-from improve.parallel import _collect_results, run_parallel_batch, run_phase_in_worktree
+from improve.parallel import (
+    _collect_results,
+    _create_worktrees,
+    _merge_worktree_results,
+    run_parallel_batch,
+    run_phase_in_worktree,
+)
 from improve.state import PhaseResult
 from tests.conftest import _test_config
 
@@ -418,3 +424,58 @@ class TestRunParallelBatch:
             )
 
         assert result is False
+
+
+class TestCreateWorktrees:
+    def test_returns_worktree_paths_on_success(self):
+        with patch("improve.parallel.git.create_worktree", return_value=True):
+            result = _create_worktrees(["simplify", "review"], "/tmp/base")
+
+        assert result == {
+            "simplify": "/tmp/base/simplify",
+            "review": "/tmp/base/review",
+        }
+
+    def test_returns_none_when_creation_fails(self):
+        with patch("improve.parallel.git.create_worktree", return_value=False):
+            result = _create_worktrees(["simplify"], "/tmp/base")
+
+        assert result is None
+
+    def test_returns_empty_dict_for_empty_phases(self):
+        result = _create_worktrees([], "/tmp/base")
+
+        assert result == {}
+
+
+class TestMergeWorktreeResults:
+    def test_applies_changes_from_worktrees(self):
+        results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
+        worktrees = {"simplify": "/tmp/wt/simplify"}
+
+        with patch("improve.parallel.git.apply_worktree_changes", return_value=["a.py"]):
+            _merge_worktree_results(results, worktrees)
+
+        assert results[0].files == ["a.py"]
+
+    def test_marks_result_as_no_changes_on_oserror(self):
+        results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
+        worktrees = {"simplify": "/tmp/wt/simplify"}
+
+        with patch(
+            "improve.parallel.git.apply_worktree_changes",
+            side_effect=OSError("denied"),
+        ):
+            _merge_worktree_results(results, worktrees)
+
+        assert results[0].changes_made is False
+        assert results[0].files == []
+
+    def test_skips_results_with_no_changes(self):
+        results = [PhaseResult(1, "simplify", False, [], "No changes", True, 0)]
+        worktrees = {"simplify": "/tmp/wt/simplify"}
+
+        with patch("improve.parallel.git.apply_worktree_changes") as mock_apply:
+            _merge_worktree_results(results, worktrees)
+
+        mock_apply.assert_not_called()
