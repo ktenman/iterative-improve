@@ -3,12 +3,8 @@ name: CodeQL
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - pyproject.toml
   pull_request:
     branches: [main]
-    paths-ignore:
-      - pyproject.toml
 
 jobs:
   analyze:

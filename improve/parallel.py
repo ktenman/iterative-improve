@@ -63,6 +63,66 @@ def _collect_results(
     return results
 
 
+def _create_worktrees(phases: list[str], base_dir: str) -> dict[str, str] | None:
+    worktrees: dict[str, str] = {}
+    for phase in phases:
+        path = os.path.join(base_dir, phase)
+        if not git.create_worktree(path):
+            return None
+        worktrees[phase] = path
+    return worktrees
+
+
+def _run_phases_in_worktrees(
+    phases: list[str],
+    iteration: int,
+    worktrees: dict[str, str],
+    branch_diff: str,
+    context: str,
+    config: Config,
+) -> list[PhaseResult]:
+    with ThreadPoolExecutor(max_workers=len(phases)) as executor:
+        futures = [
+            executor.submit(
+                run_phase_in_worktree,
+                phase,
+                iteration,
+                worktrees[phase],
+                branch_diff,
+                context,
+                config,
+            )
+            for phase in phases
+        ]
+        return _collect_results(futures, phases, iteration)
+
+
+def _merge_worktree_results(
+    results: list[PhaseResult],
+    worktrees: dict[str, str],
+) -> None:
+    seen_files: set[str] = set()
+    for result in results:
+        if not result.changes_made:
+            continue
+        overlap = seen_files & set(result.files)
+        if overlap:
+            logger.warning(
+                "parallel] %s overwrites file(s) also changed by earlier phase: %s",
+                result.phase,
+                ", ".join(sorted(overlap)),
+            )
+        try:
+            applied = git.apply_worktree_changes(worktrees[result.phase])
+        except OSError:
+            logger.exception("parallel] Failed to apply changes from %s", result.phase)
+            result.changes_made = False
+            result.files = []
+            continue
+        result.files = applied
+        seen_files.update(applied)
+
+
 def _check_ci_after_batch(
     branch: str,
     pre_batch_run_id: int | None,
@@ -92,53 +152,20 @@ def run_parallel_batch(
 ) -> bool:
     branch_diff = git.diff_vs_main()
     pre_batch_run_id = ci.get_latest_run_id(branch, config) if not skip_ci else None
-
     base_dir = tempfile.mkdtemp(prefix="improve-")
-
-    worktrees: dict[str, str] = {}
+    worktrees = _create_worktrees(phases, base_dir) or {}
     try:
-        for phase in phases:
-            path = os.path.join(base_dir, phase)
-            if not git.create_worktree(path):
-                return False
-            worktrees[phase] = path
-
-        with ThreadPoolExecutor(max_workers=len(phases)) as executor:
-            futures = [
-                executor.submit(
-                    run_phase_in_worktree,
-                    phase,
-                    iteration,
-                    worktrees[phase],
-                    branch_diff,
-                    context,
-                    config,
-                )
-                for phase in phases
-            ]
-            results = _collect_results(futures, phases, iteration)
-
-        seen_files: set[str] = set()
-        for result in results:
-            if not result.changes_made:
-                continue
-            overlap = seen_files & set(result.files)
-            if overlap:
-                logger.warning(
-                    "parallel] %s overwrites file(s) also changed by earlier phase: %s",
-                    result.phase,
-                    ", ".join(sorted(overlap)),
-                )
-            try:
-                applied = git.apply_worktree_changes(worktrees[result.phase])
-            except OSError:
-                logger.exception("parallel] Failed to apply changes from %s", result.phase)
-                result.changes_made = False
-                result.files = []
-                continue
-            result.files = applied
-            seen_files.update(applied)
-
+        if not worktrees:
+            return False
+        results = _run_phases_in_worktrees(
+            phases,
+            iteration,
+            worktrees,
+            branch_diff,
+            context,
+            config,
+        )
+        _merge_worktree_results(results, worktrees)
         for result in results:
             add_result(result)
 

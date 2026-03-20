@@ -165,6 +165,13 @@ class IterationLoop:
             ", ".join(self._active_phases) or "none",
         )
 
+    def _check_convergence(self, results: list[PhaseResult]) -> bool:
+        self._drop_converged_phases(results)
+        if not any(r.changes_made for r in results):
+            logger.info("loop] Converged: no changes in any phase")
+            return True
+        return False
+
     def run_batch_iteration(self, iteration: int) -> bool:
         pre_batch_run_id = (
             ci.get_latest_run_id(self.state.branch, self.config) if not self.skip_ci else None
@@ -175,15 +182,11 @@ class IterationLoop:
             self.state.add(result)
             results.append(result)
 
-        self._drop_converged_phases(results)
-
-        if not any(r.changes_made for r in results):
-            logger.info("loop] Converged: no changes in any phase")
+        if self._check_convergence(results):
             return False
         if not all(r.ci_passed for r in results):
             logger.warning("loop] Stopping: push failed")
             return False
-
         if self.skip_ci:
             return True
 
@@ -228,11 +231,7 @@ class IterationLoop:
                 logger.warning("loop] Stopping: CI failed after %s", phase)
                 return False
 
-        self._drop_converged_phases(results)
-        if not any(r.changes_made for r in results):
-            logger.info("loop] Converged: no changes in any phase")
-            return False
-        return True
+        return not self._check_convergence(results)
 
     def _squash_branch(self) -> None:
         kept = self.state.kept_results()
