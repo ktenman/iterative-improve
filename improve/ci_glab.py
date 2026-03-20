@@ -45,13 +45,16 @@ class GitLabCI:
             return None
 
     def watch_run(self, run_id: int, timeout: int) -> bool:
-        deadline = time.monotonic() + timeout
+        start = time.monotonic()
+        deadline = start + timeout
         while time.monotonic() < deadline:
             conclusion = self.get_run_conclusion(run_id)
             if conclusion == CIConclusion.SUCCESS:
                 return True
             if conclusion is not None:
                 return False
+            elapsed = int(time.monotonic() - start)
+            logger.info("ci] Polling pipeline #%d... (%ds elapsed)", run_id, elapsed)
             time.sleep(POLL_INTERVAL)
         logger.warning("ci] Pipeline %d timed out after %ds", run_id, timeout)
         return False

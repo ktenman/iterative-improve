@@ -97,11 +97,15 @@ class TestWatchRun:
         ],
     )
     def test_returns_expected_result_for_conclusion(self, provider, conclusion, expected):
-        with patch.object(provider, "get_run_conclusion", return_value=conclusion):
+        clock = iter([0.0, 0.0])
+        with (
+            patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
+            patch.object(provider, "get_run_conclusion", return_value=conclusion),
+        ):
             assert provider.watch_run(1, timeout=60) is expected
 
     def test_returns_false_on_timeout(self, provider):
-        clock = iter([0.0, 61.0])
+        clock = iter([0.0, 0.0, 10.0, 61.0])
         with (
             patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
             patch("improve.ci_glab.time.sleep"),
@@ -110,7 +114,7 @@ class TestWatchRun:
             assert provider.watch_run(1, timeout=60) is False
 
     def test_polls_until_conclusion_reached(self, provider):
-        clock = iter([0.0, 10.0, 20.0, 30.0])
+        clock = iter([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 30.0])
         with (
             patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
             patch("improve.ci_glab.time.sleep"),
@@ -122,6 +126,18 @@ class TestWatchRun:
 
         assert result is True
         assert mock_conclusion.call_count == 3
+
+    def test_logs_progress_during_polling(self, provider, caplog):
+        clock = iter([0.0, 0.0, 10.0, 10.0, 20.0])
+        with (
+            caplog.at_level("INFO", logger="improve"),
+            patch("improve.ci_glab.time.monotonic", side_effect=lambda: next(clock)),
+            patch("improve.ci_glab.time.sleep"),
+            patch.object(provider, "get_run_conclusion", side_effect=[None, CIConclusion.SUCCESS]),
+        ):
+            provider.watch_run(1, timeout=60)
+
+        assert any("Polling pipeline #1" in r.message for r in caplog.records)
 
 
 class TestGetFailedLogs:

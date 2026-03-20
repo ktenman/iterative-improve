@@ -19,12 +19,12 @@ class TestGetLatestRunId:
         ],
     )
     def test_parses_gh_output(self, stdout, returncode, expected):
-        config = _test_config(GitHubCI())
+        config = _test_config(GitHubCI(workflow="CI"))
         with patch("improve.ci_gh.run", return_value=_cp(stdout=stdout, returncode=returncode)):
             assert ci.get_latest_run_id("feature", config) == expected
 
     def test_returns_none_on_command_failure(self):
-        config = _test_config(GitHubCI())
+        config = _test_config(GitHubCI(workflow="CI"))
         with patch("improve.ci_gh.run", return_value=_cp(returncode=1, stderr="error")):
             assert ci.get_latest_run_id("feature", config) is None
 

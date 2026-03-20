@@ -47,6 +47,7 @@ class TestParseArgs:
         assert "security" in args.phases
         assert args.squash is False
         assert args.ci_provider is None
+        assert args.ci_workflow is None
         assert args.phase_timeout == 900
 
     def test_parses_all_custom_values(self, monkeypatch):
@@ -83,6 +84,11 @@ class TestParseArgs:
         monkeypatch.setattr("sys.argv", ["iterative-improve", "--ci-provider", provider])
         args = _parse_args()
         assert args.ci_provider == provider
+
+    def test_parses_ci_workflow(self, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["iterative-improve", "--ci-workflow", "Build"])
+        args = _parse_args()
+        assert args.ci_workflow == "Build"
 
 
 class TestValidatePhases:
@@ -262,6 +268,30 @@ class TestMain:
             main()
 
         assert mock_cls.call_args[1]["config"].ci_timeout == 60
+
+    def test_passes_ci_workflow_to_github_provider(self, monkeypatch):
+        monkeypatch.setattr(
+            "sys.argv",
+            ["iterative-improve", "-n", "1", "--skip-ci", "--ci-workflow", "Build"],
+        )
+        mock_loop = MagicMock(spec=IterationLoop)
+        with (
+            patch("improve.cli._setup_logging"),
+            patch("improve.cli.check_for_update"),
+            patch("improve.cli.require_tools"),
+            patch("improve.git.branch", return_value="feature"),
+            patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.cli.run_preflight"),
+            patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
+        ):
+            main()
+
+        from improve.ci_gh import GitHubCI
+
+        config = mock_cls.call_args[1]["config"]
+        assert isinstance(config.ci_provider, GitHubCI)
+        assert config.ci_provider._workflow == "Build"
 
     def test_uses_gitlab_provider_when_specified(self, monkeypatch):
         monkeypatch.setattr(

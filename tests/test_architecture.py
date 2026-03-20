@@ -15,6 +15,7 @@ NESTING_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
 ALLOWED_IMPORTS = {
     "cli": {
         "improve",
+        "improve.ci_gh",
         "improve.ci_glab",
         "improve.color",
         "improve.config",
