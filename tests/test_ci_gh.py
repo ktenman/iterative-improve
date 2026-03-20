@@ -9,7 +9,7 @@ from tests.conftest import _cp
 
 @pytest.fixture()
 def provider() -> GitHubCI:
-    return GitHubCI()
+    return GitHubCI(workflow="CI")
 
 
 class TestGitHubCI:
@@ -108,3 +108,101 @@ class TestGitHubCI:
     def test_get_run_conclusion_returns_none_for_null_conclusion(self, provider):
         with patch("improve.ci_gh.run", return_value=_cp(stdout='{"conclusion": null}')):
             assert provider.get_run_conclusion(42) is None
+
+
+class TestDiscoverWorkflow:
+    def test_skips_discovery_when_workflow_is_explicit(self):
+        provider = GitHubCI(workflow="Build")
+        with patch("improve.ci_gh.run", return_value=_cp(stdout="[]")) as mock_run:
+            provider.get_latest_run_id("main")
+
+        assert mock_run.call_count == 1
+        assert mock_run.call_args[0][0][1] == "run"
+
+    def test_discovers_ci_workflow_from_active_workflows(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "CI", "state": "active"}, {"name": "CodeQL", "state": "active"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout='[{"databaseId": 42}]')],
+        ):
+            assert provider.get_latest_run_id("main") == 42
+
+    def test_prefers_ci_over_build_in_priority_order(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "Build", "state": "active"}, {"name": "CI", "state": "active"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout="[]")],
+        ) as mock_run:
+            provider.get_latest_run_id("main")
+
+        run_list_args = mock_run.call_args_list[1][0][0]
+        assert "--workflow" in run_list_args
+        idx = run_list_args.index("--workflow")
+        assert run_list_args[idx + 1] == "CI"
+
+    def test_omits_workflow_flag_when_no_match_found(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "CodeQL", "state": "active"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout="[]")],
+        ) as mock_run:
+            provider.get_latest_run_id("main")
+
+        run_list_args = mock_run.call_args_list[1][0][0]
+        assert "--workflow" not in run_list_args
+
+    def test_caches_discovered_workflow_across_calls(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "CI", "state": "active"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout="[]"), _cp(stdout="[]")],
+        ) as mock_run:
+            provider.get_latest_run_id("main")
+            provider.get_latest_run_id("main")
+
+        workflow_list_calls = [c for c in mock_run.call_args_list if c[0][0][1] == "workflow"]
+        assert len(workflow_list_calls) == 1
+
+    def test_falls_back_when_gh_workflow_list_fails(self):
+        provider = GitHubCI()
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(returncode=1), _cp(stdout='[{"databaseId": 42}]')],
+        ):
+            assert provider.get_latest_run_id("main") == 42
+
+    def test_ignores_inactive_workflows(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "CI", "state": "disabled_manually"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout="[]")],
+        ) as mock_run:
+            provider.get_latest_run_id("main")
+
+        run_list_args = mock_run.call_args_list[1][0][0]
+        assert "--workflow" not in run_list_args
+
+    def test_matches_workflow_name_case_insensitively(self):
+        provider = GitHubCI()
+        workflows = '[{"name": "ci", "state": "active"}]'
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout=workflows), _cp(stdout="[]")],
+        ) as mock_run:
+            provider.get_latest_run_id("main")
+
+        run_list_args = mock_run.call_args_list[1][0][0]
+        assert "--workflow" in run_list_args
+
+    def test_handles_malformed_json_in_workflow_list(self):
+        provider = GitHubCI()
+        with patch(
+            "improve.ci_gh.run",
+            side_effect=[_cp(stdout="not json"), _cp(stdout='[{"databaseId": 7}]')],
+        ):
+            assert provider.get_latest_run_id("main") == 7

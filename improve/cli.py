@@ -7,6 +7,7 @@ import threading
 from datetime import datetime
 
 from improve import color, git
+from improve.ci_gh import GitHubCI
 from improve.ci_glab import GitLabCI
 from improve.config import Config
 from improve.mode import Mode
@@ -76,6 +77,11 @@ def _parse_args() -> argparse.Namespace:
         help="CI provider (default: auto-detect from git remote)",
     )
     parser.add_argument(
+        "--ci-workflow",
+        default=None,
+        help="GitHub Actions workflow name (default: auto-detect)",
+    )
+    parser.add_argument(
         "--phase-timeout",
         type=int,
         default=900,
@@ -119,12 +125,12 @@ def main() -> None:
     if args.phase_timeout < 30:
         logger.error("loop] Phase timeout must be at least 30 seconds")
         sys.exit(1)
+    ci_provider = GitLabCI() if platform == Platform.GITLAB else GitHubCI(workflow=args.ci_workflow)
     config = Config(
         claude_timeout=args.phase_timeout,
         ci_timeout=args.ci_timeout * 60,
+        ci_provider=ci_provider,
     )
-    if platform == Platform.GITLAB:
-        config.ci_provider = GitLabCI()
     phases = _validate_phases(args.phases)
 
     current_branch = git.branch()
