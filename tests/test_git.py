@@ -846,3 +846,58 @@ class TestResolveExistingConflictsEdgeCases:
             git.resolve_existing_conflicts()
 
         mock_run.assert_any_call(["git", "merge", "--abort"])
+
+
+class TestResolveAndCommit:
+    def test_returns_true_on_successful_resolution_and_commit(self):
+        with (
+            patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git._resolve_and_commit(["file.py"], "test") is True
+
+    def test_returns_false_when_claude_fails(self):
+        with (
+            patch("improve.git.run_claude", side_effect=RuntimeError("boom")),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git._resolve_and_commit(["file.py"], "test") is False
+
+    def test_aborts_merge_when_conflicts_remain(self):
+        with (
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.has_conflicts", return_value=True),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            assert git._resolve_and_commit(["file.py"], "test") is False
+
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+    def test_aborts_merge_when_commit_fails(self):
+        with (
+            patch("improve.git.run_claude", return_value=("", 1.0)),
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git._commit_resolution", return_value=False),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            assert git._resolve_and_commit(["file.py"], "test") is False
+
+        mock_run.assert_any_call(["git", "merge", "--abort"])
+
+
+class TestAbortMergeGracefully:
+    def test_returns_true_when_abort_succeeds(self):
+        with (
+            patch("improve.git.has_conflicts", return_value=False),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git._abort_merge_gracefully() is True
+
+    def test_returns_false_when_conflicts_persist_after_abort(self):
+        with (
+            patch("improve.git.has_conflicts", return_value=True),
+            patch("improve.git.run", return_value=_cp()),
+        ):
+            assert git._abort_merge_gracefully() is False
