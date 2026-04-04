@@ -2,6 +2,8 @@ import pytest
 
 from improve.phases import (
     ACTION_VERBS,
+    _is_natural_language,
+    _scrub_secrets,
     _truncate,
     build_ci_fix_prompt,
     build_commit_message,
@@ -45,12 +47,18 @@ class TestExtractSummary:
     @pytest.mark.parametrize(
         "text, expected",
         [
-            ("123456789012345", "Code improvements"),
-            ("1234567890123456", "1234567890123456"),
+            ("Abcdefghijklmno", "Code improvements"),
+            ("Abcdefghijklmnop", "Abcdefghijklmnop"),
         ],
     )
     def test_boundary_at_15_and_16_chars(self, text, expected):
         assert extract_summary(text) == expected
+
+    def test_skips_code_lines_as_fallback(self):
+        assert extract_summary("import os; import sys; from pathlib") == "Code improvements"
+
+    def test_skips_numeric_lines_as_fallback(self):
+        assert extract_summary("1234567890123456") == "Code improvements"
 
 
 class TestBuildCommitMessage:
@@ -448,3 +456,58 @@ class TestBuildCommitMessagePrecision:
     def test_preserves_rest_after_lowercase_first_char(self):
         result = build_commit_message("review", "Null check missing")
         assert result == "Fix null check missing"
+
+
+class TestIsNaturalLanguage:
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("Fixed the bug in auth module", True),
+            ("Refactored error handling", True),
+            ("import os; import sys", False),
+            ("from pathlib import Path", False),
+            ("def foo():", False),
+            ("class MyClass:", False),
+            ("```python", False),
+            ("// comment line", False),
+            ("/* block comment", False),
+            ("#! /usr/bin/env python", False),
+            ("---", False),
+            ("123 files changed", False),
+            ("", False),
+        ],
+    )
+    def test_classifies_text_correctly(self, text, expected):
+        assert _is_natural_language(text) == expected
+
+
+class TestScrubSecrets:
+    @pytest.mark.parametrize(
+        "text, expected",
+        [
+            ("SECRET_KEY=abc123", "SECRET_KEY=<redacted>"),
+            ("API_TOKEN=xyz", "API_TOKEN=<redacted>"),
+            ("AWS_SECRET_ACCESS_KEY=abc", "AWS_SECRET_ACCESS_KEY=<redacted>"),
+            ("DATABASE_PASSWORD=pass", "DATABASE_PASSWORD=<redacted>"),
+            ("AUTH_CREDENTIAL=foo", "AUTH_CREDENTIAL=<redacted>"),
+            ("Error: test failed", "Error: test failed"),
+            ("primary_key=users.id", "primary_key=users.id"),
+            ("MONKEY=123", "MONKEY=123"),
+            ("PASSWORD=hidden", "PASSWORD=<redacted>"),
+        ],
+    )
+    def test_scrubs_secrets_from_text(self, text, expected):
+        assert _scrub_secrets(text) == expected
+
+    def test_scrubs_multiple_secrets_in_same_text(self):
+        text = "SECRET_KEY=abc API_TOKEN=xyz normal text"
+        result = _scrub_secrets(text)
+        assert "SECRET_KEY=<redacted>" in result
+        assert "API_TOKEN=<redacted>" in result
+        assert "normal text" in result
+
+    def test_ci_fix_prompt_scrubs_secrets(self):
+        prompt = build_ci_fix_prompt("SECRET_KEY=leaked123 Error: test failed")
+        assert "leaked123" not in prompt
+        assert "SECRET_KEY=<redacted>" in prompt
+        assert "test failed" in prompt

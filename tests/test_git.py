@@ -736,6 +736,21 @@ class TestCommitResolution:
         summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
         assert len(summary_part) <= 40
 
+    def test_truncates_at_word_boundary_when_space_found_after_position_15(self):
+        long_summary = "Resolved authentication conflicts in middleware layer code"
+        with (
+            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.extract_summary", return_value=long_summary),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(returncode=1), _cp()]
+            git._commit_resolution("output")
+
+        fallback_msg = mock_run.call_args_list[1][0][0][3]
+        summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
+        assert len(summary_part) <= 40
+        assert not summary_part.endswith(" ")
+
     def test_returns_false_when_both_commits_fail(self):
         with (
             patch("improve.git.stage_tracked_changes"),

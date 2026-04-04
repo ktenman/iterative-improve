@@ -4,8 +4,6 @@ import http.client
 import json
 import logging
 import re
-import shutil
-import subprocess
 import urllib.request
 from importlib.metadata import PackageNotFoundError, version
 
@@ -38,33 +36,12 @@ def _parse_version(v: str) -> tuple[int, ...]:
     return tuple(parts) or (0,)
 
 
-def _auto_upgrade(installed: str, latest: str) -> None:
-    uv = shutil.which("uv")
-    if not uv:
-        logger.info(
-            "update] New version available: %s → %s — run: uv tool upgrade iterative-improve",
-            installed,
-            latest,
-        )
-        return
-    logger.info("update] Upgrading %s → %s …", installed, latest)
-    try:
-        result = subprocess.run(
-            [uv, "tool", "upgrade", "iterative-improve"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except subprocess.TimeoutExpired:
-        logger.warning("update] Upgrade timed out after 60s")
-        return
-    except OSError as exc:
-        logger.warning("update] Upgrade failed to start: %s", exc)
-        return
-    if result.returncode == 0:
-        logger.info("update] Upgraded to %s (takes effect on next run)", latest)
-    else:
-        logger.warning("update] Upgrade failed: %s", result.stderr.strip()[:200])
+def _notify_upgrade(installed: str, latest: str) -> None:
+    logger.info(
+        "update] New version available: %s → %s — run: uv tool upgrade iterative-improve",
+        installed,
+        latest,
+    )
 
 
 def check_for_update() -> None:
@@ -74,6 +51,6 @@ def check_for_update() -> None:
         if not latest:
             return
         if _parse_version(latest) > _parse_version(installed):
-            _auto_upgrade(installed, latest)
+            _notify_upgrade(installed, latest)
     except Exception:
         logger.debug("update] Version check failed", exc_info=True)

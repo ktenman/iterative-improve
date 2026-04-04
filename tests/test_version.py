@@ -1,11 +1,10 @@
 import logging
-import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from improve.version import (
-    _auto_upgrade,
+    _notify_upgrade,
     _parse_version,
     check_for_update,
     get_installed_version,
@@ -81,91 +80,46 @@ class TestGetLatestVersion:
         assert result is None
 
 
-class TestAutoUpgrade:
-    def test_runs_uv_tool_upgrade_when_uv_available(self, caplog):
-        result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with (
-            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch("improve.version.subprocess.run", return_value=result) as mock_run,
-            caplog.at_level(logging.INFO, logger="improve"),
-        ):
-            _auto_upgrade("0.1.0", "0.2.0")
+class TestNotifyUpgrade:
+    def test_logs_upgrade_notification(self, caplog):
+        with caplog.at_level(logging.INFO, logger="improve"):
+            _notify_upgrade("0.1.0", "0.2.0")
 
-        mock_run.assert_called_once_with(
-            ["/usr/bin/uv", "tool", "upgrade", "iterative-improve"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        assert "Upgraded to 0.2.0" in caplog.text
-
-    def test_skips_subprocess_when_uv_not_found(self):
-        with (
-            patch("improve.version.shutil.which", return_value=None),
-            patch("improve.version.subprocess.run") as mock_run,
-        ):
-            _auto_upgrade("0.1.0", "0.2.0")
-
-        mock_run.assert_not_called()
-
-    def test_handles_subprocess_timeout(self):
-        with (
-            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch(
-                "improve.version.subprocess.run",
-                side_effect=subprocess.TimeoutExpired("uv", 60),
-            ),
-        ):
-            _auto_upgrade("0.1.0", "0.2.0")
-
-    def test_handles_oserror_during_upgrade(self):
-        with (
-            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch("improve.version.subprocess.run", side_effect=OSError("exec failed")),
-        ):
-            _auto_upgrade("0.1.0", "0.2.0")
-
-    def test_handles_nonzero_exit_code(self):
-        with (
-            patch("improve.version.shutil.which", return_value="/usr/bin/uv"),
-            patch("improve.version.subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=[], returncode=1, stdout="", stderr="error"
-            )
-            _auto_upgrade("0.1.0", "0.2.0")
+        assert "New version available: 0.1.0" in caplog.text
+        assert "0.2.0" in caplog.text
+        assert "uv tool upgrade iterative-improve" in caplog.text
 
 
 class TestCheckForUpdate:
-    def test_triggers_upgrade_when_newer_version_available(self):
+    def test_triggers_notification_when_newer_version_available(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.1.0"),
             patch("improve.version.get_latest_version", return_value="0.2.0"),
-            patch("improve.version._auto_upgrade") as mock_upgrade,
+            patch("improve.version._notify_upgrade") as mock_notify,
         ):
             check_for_update()
 
-        mock_upgrade.assert_called_once_with("0.1.0", "0.2.0")
+        mock_notify.assert_called_once_with("0.1.0", "0.2.0")
 
-    def test_does_not_upgrade_when_up_to_date(self):
+    def test_does_not_notify_when_up_to_date(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.2.0"),
             patch("improve.version.get_latest_version", return_value="0.2.0"),
-            patch("improve.version._auto_upgrade") as mock_upgrade,
+            patch("improve.version._notify_upgrade") as mock_notify,
         ):
             check_for_update()
 
-        mock_upgrade.assert_not_called()
+        mock_notify.assert_not_called()
 
-    def test_does_not_upgrade_when_latest_unavailable(self):
+    def test_does_not_notify_when_latest_unavailable(self):
         with (
             patch("improve.version.get_installed_version", return_value="0.1.0"),
             patch("improve.version.get_latest_version", return_value=None),
-            patch("improve.version._auto_upgrade") as mock_upgrade,
+            patch("improve.version._notify_upgrade") as mock_notify,
         ):
             check_for_update()
 
-        mock_upgrade.assert_not_called()
+        mock_notify.assert_not_called()
 
     def test_swallows_unexpected_exceptions_in_daemon_thread(self):
         with patch("improve.version.get_installed_version", side_effect=RuntimeError("boom")):

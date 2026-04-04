@@ -118,7 +118,12 @@ def _commit_resolution(output: str) -> bool:
     if run(["git", "commit", "--no-edit"]).returncode == 0:
         return True
     summary = extract_summary(output)
-    return run(["git", "commit", "-m", f"Resolve merge conflicts: {summary[:40]}"]).returncode == 0
+    truncated = summary[:40]
+    if len(summary) > 40:
+        last_space = truncated.rfind(" ")
+        if last_space > 15:
+            truncated = truncated[:last_space]
+    return run(["git", "commit", "-m", f"Resolve merge conflicts: {truncated}"]).returncode == 0
 
 
 def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, bool]:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 ACTION_VERBS = frozenset(
     {
         "add",
@@ -144,15 +146,36 @@ def build_conflict_prompt(conflicts: list[str]) -> str:
     )
 
 
+_SENSITIVE_SEGMENTS = frozenset({"SECRET", "TOKEN", "KEY", "PASSWORD", "CREDENTIAL"})
+_VAR_ASSIGNMENT = re.compile(r"([A-Z][A-Z_]*)=(\S+)")
+
+
+def _scrub_secrets(text: str) -> str:
+    def _redact(match: re.Match) -> str:
+        name = match.group(1)
+        if any(seg in _SENSITIVE_SEGMENTS for seg in name.split("_")):
+            return f"{name}=<redacted>"
+        return match.group(0)
+
+    return _VAR_ASSIGNMENT.sub(_redact, text)
+
+
 def build_ci_fix_prompt(errors: str) -> str:
     return (
         "CI/CD pipeline failed. Fix the errors with minimal changes.\n\n"
-        f"Error logs:\n{errors}\n\n"
+        f"Error logs:\n{_scrub_secrets(errors)}\n\n"
         "Instructions:\n"
         "- Fix only what's needed to pass CI\n"
         "- Run lint/format/test commands after fixing\n"
         '- Output one line starting with "SUMMARY:" describing the fix'
     )
+
+
+_NON_SUMMARY_PREFIXES = ("import ", "from ", "def ", "class ", "```", "//", "/*", "#!", "---")
+
+
+def _is_natural_language(text: str) -> bool:
+    return bool(text) and text[0].isalpha() and not text.startswith(_NON_SUMMARY_PREFIXES)
 
 
 def extract_summary(output: str) -> str:
@@ -161,7 +184,7 @@ def extract_summary(output: str) -> str:
         stripped = line.strip()
         if stripped.upper().startswith("SUMMARY:"):
             return stripped[8:].strip()
-        if not fallback and len(stripped) > 15:
+        if not fallback and len(stripped) > 15 and _is_natural_language(stripped):
             fallback = stripped
     return fallback or "Code improvements"
 
