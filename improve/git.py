@@ -139,6 +139,21 @@ def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, boo
         return "", False
 
 
+def _resolve_and_commit(conflicts: list[str], tag: str) -> bool:
+    output, ok = _attempt_claude_resolution(conflicts, tag)
+    if not ok:
+        return False
+    if has_conflicts():
+        logger.error("%s] Conflicts remain after resolution attempt", tag)
+        run(["git", "merge", "--abort"])
+        return False
+    if not _commit_resolution(output):
+        logger.error("%s] Failed to commit resolution", tag)
+        run(["git", "merge", "--abort"])
+        return False
+    return True
+
+
 def _resolve_conflicts(branch_name: str) -> bool:
     conflicts = conflict_files()
     logger.warning(
@@ -146,27 +161,23 @@ def _resolve_conflicts(branch_name: str) -> bool:
         len(conflicts),
         ", ".join(conflicts[:5]),
     )
-
-    output, ok = _attempt_claude_resolution(conflicts, "sync")
-    if not ok:
+    if not _resolve_and_commit(conflicts, "sync"):
         return False
-
-    if has_conflicts():
-        logger.error("sync] Conflicts remain after Claude attempted resolution")
-        run(["git", "merge", "--abort"])
-        return False
-
-    if not _commit_resolution(output):
-        logger.error("sync] Failed to commit merge resolution")
-        run(["git", "merge", "--abort"])
-        return False
-
     push = run(["git", "push", "-u", "origin", branch_name])
     if push.returncode != 0:
         logger.warning("sync] Push failed after conflict resolution: %s", push.stderr.strip())
         return False
-
     logger.info("sync] Conflicts resolved and pushed")
+    return True
+
+
+def _abort_merge_gracefully() -> bool:
+    logger.warning("git] Auto-resolution failed, aborting merge to restore clean state...")
+    run(["git", "merge", "--abort"])
+    if has_conflicts():
+        logger.error("git] Could not abort merge — manual resolution required")
+        return False
+    logger.info("git] Merge aborted, working tree restored")
     return True
 
 
@@ -179,25 +190,15 @@ def resolve_existing_conflicts() -> bool:
         len(conflicts),
         ", ".join(conflicts[:5]),
     )
-
     output, ok = _attempt_claude_resolution(conflicts, "git")
     if not ok:
         return False
-
     if has_conflicts():
-        logger.warning("git] Auto-resolution failed, aborting merge to restore clean state...")
-        run(["git", "merge", "--abort"])
-        if has_conflicts():
-            logger.error("git] Could not abort merge — manual resolution required")
-            return False
-        logger.info("git] Merge aborted, working tree restored")
-        return True
-
+        return _abort_merge_gracefully()
     if not _commit_resolution(output):
         logger.error("git] Failed to commit conflict resolution")
         run(["git", "merge", "--abort"])
         return False
-
     logger.info("git] Pre-existing conflicts resolved and committed")
     return True
 
