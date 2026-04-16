@@ -1,6 +1,6 @@
 [project]
 name = "iterative-improve"
-version = "0.2.18"
+version = "0.2.19"
 description = "Iterative code improvement loop using Claude and CI"
 readme = "README.md"
 requires-python = ">=3.10"
