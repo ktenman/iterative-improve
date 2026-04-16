@@ -1,6 +1,8 @@
 from concurrent.futures import Future
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from improve.parallel import (
     _collect_results,
     _create_worktrees,
@@ -425,6 +427,32 @@ class TestRunParallelBatch:
 
         assert result is False
 
+    def test_cleans_up_base_dir_when_create_raises(self, tmp_path):
+        base_dir = tmp_path / "improve-tmp"
+        base_dir.mkdir()
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="f.py"),
+            patch(
+                "improve.parallel.git.create_worktree", side_effect=RuntimeError("worktree boom")
+            ),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("tempfile.mkdtemp", return_value=str(base_dir)),
+            pytest.raises(RuntimeError),
+        ):
+            run_parallel_batch(
+                ["simplify"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                MagicMock(),
+                _test_config(),
+            )
+
+        assert not base_dir.exists()
+
 
 class TestCreateWorktrees:
     def test_returns_worktree_paths_on_success(self):
@@ -446,6 +474,35 @@ class TestCreateWorktrees:
         result = _create_worktrees([], "/tmp/base")
 
         assert result == {}
+
+    def test_cleans_up_partial_worktrees_on_failure(self):
+        outcomes = iter([True, False])
+        with (
+            patch("improve.parallel.git.create_worktree", side_effect=lambda _: next(outcomes)),
+            patch("improve.parallel.git.remove_worktree") as mock_remove,
+        ):
+            result = _create_worktrees(["simplify", "review"], "/tmp/base")
+
+        assert result is None
+        mock_remove.assert_called_once_with("/tmp/base/simplify")
+
+    def test_cleans_up_partial_worktrees_when_create_raises(self):
+        outcomes = iter([True, RuntimeError("boom")])
+
+        def fake_create(_path):
+            value = next(outcomes)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with (
+            patch("improve.parallel.git.create_worktree", side_effect=fake_create),
+            patch("improve.parallel.git.remove_worktree") as mock_remove,
+            pytest.raises(RuntimeError),
+        ):
+            _create_worktrees(["simplify", "review"], "/tmp/base")
+
+        mock_remove.assert_called_once_with("/tmp/base/simplify")
 
 
 class TestMergeWorktreeResults:
@@ -475,7 +532,32 @@ class TestMergeWorktreeResults:
         results = [PhaseResult(1, "simplify", False, [], "No changes", True, 0)]
         worktrees = {"simplify": "/tmp/wt/simplify"}
 
-        with patch("improve.parallel.git.apply_worktree_changes") as mock_apply:
+        with (
+            patch("improve.parallel.git.apply_worktree_changes") as mock_apply,
+            patch("improve.parallel.git.repo_root") as mock_root,
+        ):
             _merge_worktree_results(results, worktrees)
 
         mock_apply.assert_not_called()
+        mock_root.assert_not_called()
+
+    def test_resolves_repo_root_only_once_for_multiple_results(self):
+        results = [
+            PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+            PhaseResult(1, "security", True, ["c.py"], "Fixed", True, 0),
+        ]
+        worktrees = {"simplify": "/tmp/s", "review": "/tmp/r", "security": "/tmp/sec"}
+
+        with (
+            patch("improve.parallel.git.repo_root", return_value="/repo") as mock_root,
+            patch(
+                "improve.parallel.git.apply_worktree_changes",
+                side_effect=[["a.py"], ["b.py"], ["c.py"]],
+            ) as mock_apply,
+        ):
+            _merge_worktree_results(results, worktrees)
+
+        assert mock_root.call_count == 1
+        for call in mock_apply.call_args_list:
+            assert call.args[1] == "/repo"

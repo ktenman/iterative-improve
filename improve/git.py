@@ -219,11 +219,16 @@ def remove_worktree(worktree_path: str) -> None:
         )
 
 
-def apply_worktree_changes(worktree_path: str) -> list[str]:
+def repo_root() -> str:
+    return run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
+
+
+def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> list[str]:
     files = changed_files(worktree_path)
     if not files:
         return []
-    main_root = run(["git", "rev-parse", "--show-toplevel"]).stdout.strip()
+    if main_root is None:
+        main_root = repo_root()
     if not main_root:
         logger.warning("git] Cannot determine repo root, skipping worktree apply")
         return []
