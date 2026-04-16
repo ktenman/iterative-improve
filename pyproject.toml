@@ -40,10 +40,11 @@ select = [
 known-first-party = ["improve"]
 
 [tool.mutmut]
-paths_to_mutate = "improve/"
-tests_dir = "tests/"
-runner = "python -m pytest -x -q --tb=no"
-dict_synonyms = ""
+paths_to_mutate = ["improve/"]
+tests_dir = ["tests/"]
+do_not_mutate = ["improve/__init__.py", "improve/version.py", "improve/color.py"]
+also_copy = ["improve/__init__.py", "improve/version.py", "improve/color.py"]
+pytest_add_cli_args = ["-x", "-q", "--tb=no", "--ignore=tests/test_architecture.py"]
 
 [tool.coverage.run]
 source = ["improve"]

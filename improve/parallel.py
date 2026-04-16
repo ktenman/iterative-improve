@@ -63,14 +63,24 @@ def _collect_results(
     return results
 
 
+def _cleanup_worktrees(worktrees: dict[str, str]) -> None:
+    for path in worktrees.values():
+        git.remove_worktree(path)
+
+
 def _create_worktrees(phases: list[str], base_dir: str) -> dict[str, str] | None:
     worktrees: dict[str, str] = {}
-    for phase in phases:
-        path = os.path.join(base_dir, phase)
-        if not git.create_worktree(path):
-            return None
-        worktrees[phase] = path
-    return worktrees
+    try:
+        for phase in phases:
+            path = os.path.join(base_dir, phase)
+            if not git.create_worktree(path):
+                _cleanup_worktrees(worktrees)
+                return None
+            worktrees[phase] = path
+        return worktrees
+    except Exception:
+        _cleanup_worktrees(worktrees)
+        raise
 
 
 def _run_phases_in_worktrees(
@@ -102,6 +112,7 @@ def _merge_worktree_results(
     worktrees: dict[str, str],
 ) -> None:
     seen_files: set[str] = set()
+    main_root: str | None = None
     for result in results:
         if not result.changes_made:
             continue
@@ -112,8 +123,10 @@ def _merge_worktree_results(
                 result.phase,
                 ", ".join(sorted(overlap)),
             )
+        if main_root is None:
+            main_root = git.repo_root()
         try:
-            applied = git.apply_worktree_changes(worktrees[result.phase])
+            applied = git.apply_worktree_changes(worktrees[result.phase], main_root)
         except OSError:
             logger.exception("parallel] Failed to apply changes from %s", result.phase)
             result.changes_made = False
@@ -153,10 +166,12 @@ def run_parallel_batch(
     branch_diff = git.diff_vs_main()
     pre_batch_run_id = ci.get_latest_run_id(branch, config) if not skip_ci else None
     base_dir = tempfile.mkdtemp(prefix="improve-")
-    worktrees = _create_worktrees(phases, base_dir) or {}
+    worktrees: dict[str, str] = {}
     try:
-        if not worktrees:
+        created = _create_worktrees(phases, base_dir)
+        if created is None:
             return False
+        worktrees = created
         results = _run_phases_in_worktrees(
             phases,
             iteration,
@@ -185,7 +200,6 @@ def run_parallel_batch(
 
         return skip_ci or _check_ci_after_batch(branch, pre_batch_run_id, retry_ci_fixes, config)
     finally:
-        for path in worktrees.values():
-            git.remove_worktree(path)
+        _cleanup_worktrees(worktrees)
         with contextlib.suppress(OSError):
             os.rmdir(base_dir)

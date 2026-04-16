@@ -411,6 +411,16 @@ class TestChangedFilesWithCwd:
         assert "/some/path" in cmd
 
 
+class TestRepoRoot:
+    def test_returns_stripped_toplevel_path(self):
+        with patch("improve.git.run", return_value=_cp(stdout="/repo/root\n")):
+            assert git.repo_root() == "/repo/root"
+
+    def test_returns_empty_string_when_outside_repo(self):
+        with patch("improve.git.run", return_value=_cp(stdout="")):
+            assert git.repo_root() == ""
+
+
 class TestApplyWorktreeChangesEmpty:
     def test_returns_empty_when_repo_root_cannot_be_determined(self):
         with (
@@ -420,6 +430,23 @@ class TestApplyWorktreeChangesEmpty:
             result = git.apply_worktree_changes("/tmp/wt")
 
         assert result == []
+
+    def test_uses_provided_main_root_without_calling_rev_parse(self, tmp_path):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        main = tmp_path / "main"
+        main.mkdir()
+        (worktree / "f.py").write_text("x")
+
+        with (
+            patch("improve.git.changed_files", return_value=["f.py"]),
+            patch("improve.git.run") as mock_run,
+        ):
+            files = git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert files == ["f.py"]
+        assert (main / "f.py").read_text() == "x"
+        mock_run.assert_not_called()
 
 
 class TestApplyWorktreeChanges:
