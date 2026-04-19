@@ -153,9 +153,7 @@ class IterationLoop:
             return PhaseResult.crashed(iteration, phase)
 
     def _drop_converged_phases(self, results: list[PhaseResult]) -> None:
-        converged = {
-            r.phase for r in results if not r.changes_made and r.summary != "Phase crashed"
-        }
+        converged = {r.phase for r in results if not r.changes_made and not r.is_crashed}
         if not converged:
             return
         self._active_phases = [p for p in self._active_phases if p not in converged]
@@ -167,10 +165,14 @@ class IterationLoop:
 
     def _check_convergence(self, results: list[PhaseResult]) -> bool:
         self._drop_converged_phases(results)
-        if not any(r.changes_made for r in results):
-            logger.info("loop] Converged: no changes in any phase")
-            return True
-        return False
+        if any(r.changes_made for r in results):
+            return False
+        crashed = [r.phase for r in results if r.is_crashed]
+        if crashed:
+            logger.info("loop] Retrying crashed phase(s) next iteration: %s", ", ".join(crashed))
+            return False
+        logger.info("loop] Converged: no changes in any phase")
+        return True
 
     def run_batch_iteration(self, iteration: int) -> bool:
         pre_batch_run_id = (

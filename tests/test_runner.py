@@ -1040,3 +1040,33 @@ class TestCheckConvergence:
 
         assert "simplify" not in loop._active_phases
         assert "review" in loop._active_phases
+
+    def test_returns_false_when_a_phase_crashed_even_if_no_changes(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult.crashed(1, "simplify"),
+            PhaseResult(1, "review", False, [], "No changes needed", True, 0),
+        ]
+
+        assert loop._check_convergence(results) is False
+
+    def test_keeps_crashed_phase_active_for_retry(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify", "review"])
+        results = [
+            PhaseResult.crashed(1, "simplify"),
+            PhaseResult(1, "review", False, [], "No changes needed", True, 0),
+        ]
+
+        loop._check_convergence(results)
+
+        assert loop._active_phases == ["simplify"]
+
+    def test_logs_retry_message_when_phase_crashed(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch, phases=["simplify"])
+        results = [PhaseResult.crashed(1, "simplify")]
+
+        with caplog.at_level(logging.INFO, logger="improve"):
+            loop._check_convergence(results)
+
+        assert "Retrying crashed phase(s) next iteration" in caplog.text
+        assert "simplify" in caplog.text
