@@ -185,7 +185,7 @@ def run_parallel_batch(
             add_result(result)
 
         if not any(r.changes_made for r in results):
-            crashed = [r.phase for r in results if r.summary == "Phase crashed"]
+            crashed = [r.phase for r in results if r.is_crashed()]
             if crashed:
                 logger.info(
                     "loop] Retrying crashed phase(s) next iteration: %s", ", ".join(crashed)
