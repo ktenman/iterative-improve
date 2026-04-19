@@ -66,6 +66,7 @@ class PhaseResult:
             ci_retries=0,
         )
 
+    @property
     def is_crashed(self) -> bool:
         return self.summary == "Phase crashed"
 
