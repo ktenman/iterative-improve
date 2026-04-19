@@ -181,7 +181,7 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
             "--effort",
             "max",
             "--max-turns",
-            "25",
+            "50",
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,

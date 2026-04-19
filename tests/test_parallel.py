@@ -100,6 +100,32 @@ class TestRunParallelBatch:
 
         assert result is False
 
+    def test_returns_true_when_a_phase_crashed_so_loop_retries_next_iteration(self):
+        results = [
+            PhaseResult.crashed(1, "simplify"),
+            PhaseResult(1, "review", False, [], "No changes needed", True, 0),
+        ]
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="file.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.run_phase_in_worktree", side_effect=results),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            result = run_parallel_batch(
+                ["simplify", "review"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                MagicMock(),
+                _test_config(),
+            )
+
+        assert result is True
+
     def test_applies_changes_and_commits(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed stuff", True, 0)
         add_result = MagicMock()
