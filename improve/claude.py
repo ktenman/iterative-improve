@@ -98,6 +98,7 @@ class ToolStop:
 @dataclass
 class Result:
     text: str
+    error: str = ""
 
 
 def _classify_events(
@@ -117,7 +118,8 @@ def _classify_events(
 
         event_type = event.get("type", "")
         if event_type == "result":
-            yield Result(event.get("result", ""))
+            errors = event.get("errors") or []
+            yield Result(event.get("result", ""), "; ".join(str(e) for e in errors))
             continue
         if event_type != "stream_event":
             continue
@@ -139,8 +141,9 @@ def _classify_events(
             yield ToolStop()
 
 
-def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool]:
+def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool, str]:
     result_text = ""
+    result_error = ""
     has_streamed = False
     current_tool = ""
     tool_input_chunks: list[str] = []
@@ -148,6 +151,7 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
     for event in _classify_events(stdout):
         if isinstance(event, Result):
             result_text = event.text
+            result_error = event.error
         elif isinstance(event, TextDelta):
             if not quiet:
                 sys.stdout.write(event.text)
@@ -166,7 +170,7 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
             logger.info("claude] %s", detail)
             current_tool = ""
 
-    return result_text, has_streamed
+    return result_text, has_streamed, result_error
 
 
 def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
@@ -180,8 +184,6 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
             "--dangerously-skip-permissions",
             "--effort",
             "max",
-            "--max-turns",
-            "50",
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -228,9 +230,10 @@ def run_claude(
     stderr_thread.start()
 
     result_text = ""
+    result_error = ""
     has_streamed = False
     try:
-        result_text, has_streamed = _parse_stream(process.stdout, quiet=quiet)
+        result_text, has_streamed, result_error = _parse_stream(process.stdout, quiet=quiet)
     finally:
         timer.cancel()
         if has_streamed:
@@ -252,7 +255,8 @@ def run_claude(
         if stderr:
             logger.warning("claude] stderr: %s", stderr[:300])
         if not result_text:
-            raise RuntimeError(f"Claude exited with code {process.returncode}: {stderr[:200]}")
+            detail = result_error or stderr
+            raise RuntimeError(f"Claude exited with code {process.returncode}: {detail[:200]}")
 
     logger.info("claude] Done in %s", format_duration(elapsed))
     logger.debug("claude] output length: %d chars", len(result_text))

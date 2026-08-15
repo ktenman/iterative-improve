@@ -243,6 +243,23 @@ class TestRunClaude:
         ):
             run_claude("prompt")
 
+    def test_raises_with_the_error_reported_by_claude_when_stderr_is_empty(self):
+        event = json.dumps(
+            {
+                "type": "result",
+                "subtype": "error_max_turns",
+                "is_error": True,
+                "errors": ["Reached maximum number of turns (50)"],
+            }
+        )
+        proc = _make_process([event + "\n"], returncode=1)
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+            pytest.raises(RuntimeError, match="Reached maximum number of turns"),
+        ):
+            run_claude("prompt")
+
     def test_returns_result_on_nonzero_return_code_when_result_present(self, caplog):
         proc = _make_process([_result("partial output")], returncode=1, stderr="warning")
         with (
@@ -300,6 +317,16 @@ class TestRunClaude:
             run_claude("prompt", cwd="/some/path")
 
         assert mock_popen.call_args[1]["cwd"] == "/some/path"
+
+    def test_does_not_cap_turns_so_a_long_phase_runs_to_completion(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt")
+
+        assert "--max-turns" not in mock_popen.call_args[0][0]
 
     def test_suppresses_stdout_in_quiet_mode(self):
         proc = _make_process([_text_delta("Hello"), _result("")])
@@ -411,6 +438,12 @@ class TestClassifyEvents:
 
         assert isinstance(events[0], Result)
         assert events[0].text == "output"
+
+    def test_yields_result_carrying_the_errors_reported_by_the_cli(self):
+        line = json.dumps({"type": "result", "errors": ["out of turns", "gave up"]})
+        events = list(_classify_events(iter([line + "\n"])))
+
+        assert events[0].error == "out of turns; gave up"
 
     def test_yields_tool_lifecycle(self):
         lines = [
