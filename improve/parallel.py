@@ -110,7 +110,7 @@ def _run_phases_in_worktrees(
 def _merge_worktree_results(
     results: list[PhaseResult],
     worktrees: dict[str, str],
-) -> None:
+) -> list[str]:
     seen_files: set[str] = set()
     main_root: str | None = None
     for result in results:
@@ -134,6 +134,7 @@ def _merge_worktree_results(
             continue
         result.files = applied
         seen_files.update(applied)
+    return sorted(seen_files)
 
 
 def _check_ci_after_batch(
@@ -180,7 +181,7 @@ def run_parallel_batch(
             context,
             config,
         )
-        _merge_worktree_results(results, worktrees)
+        applied = _merge_worktree_results(results, worktrees)
         for result in results:
             add_result(result)
 
@@ -200,7 +201,7 @@ def run_parallel_batch(
         else:
             message = "Improve code quality"
 
-        if not git.commit_and_push(message, branch):
+        if not git.commit_and_push(message, branch, applied):
             logger.warning("loop] Stopping: push failed")
             return False
 

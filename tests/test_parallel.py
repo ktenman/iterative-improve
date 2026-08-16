@@ -307,6 +307,34 @@ class TestRunParallelBatch:
         commit_message = mock_push.call_args[0][0]
         assert commit_message == "Improve code quality"
 
+    def test_commits_only_the_files_applied_from_the_worktrees(self):
+        results = [
+            PhaseResult(1, "simplify", True, ["a.py"], "Simplified", True, 0),
+            PhaseResult(1, "review", True, ["b.py"], "Fixed", True, 0),
+        ]
+
+        with (
+            patch("improve.parallel.git.diff_vs_main", return_value="a.py\nb.py"),
+            patch("improve.parallel.git.create_worktree", return_value=True),
+            patch("improve.parallel.git.remove_worktree"),
+            patch("improve.parallel.git.apply_worktree_changes", side_effect=[["a.py"], ["b.py"]]),
+            patch("improve.parallel.git.commit_and_push", return_value=True) as mock_push,
+            patch("improve.parallel.run_phase_in_worktree", side_effect=results),
+            patch("tempfile.mkdtemp", return_value="/tmp/improve-test"),
+        ):
+            run_parallel_batch(
+                ["simplify", "review"],
+                1,
+                "feature",
+                "None",
+                True,
+                MagicMock(),
+                MagicMock(),
+                _test_config(),
+            )
+
+        assert mock_push.call_args[0][2] == ["a.py", "b.py"]
+
     def test_single_changed_phase_uses_phase_commit_message(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "extract helper", True, 0)
 

@@ -107,6 +107,18 @@ def _validate_phases(raw: str) -> list[str]:
     return phases
 
 
+def _require_clean_tree() -> None:
+    dirty = git.changed_files()
+    if not dirty:
+        return
+    logger.error(
+        "loop] Working tree not clean — commit, stash, or gitignore %d file(s) first: %s",
+        len(dirty),
+        ", ".join(dirty[:5]),
+    )
+    sys.exit(1)
+
+
 def main() -> None:
     args = _parse_args()
     color.init(force_no_color=args.no_color)
@@ -145,6 +157,7 @@ def main() -> None:
         logger.error("loop] Unresolved merge conflicts — please resolve manually and retry")
         sys.exit(1)
 
+    _require_clean_tree()
     run_preflight(current_branch, ci_tool, args.skip_ci)
 
     continuous = args.iterations is None

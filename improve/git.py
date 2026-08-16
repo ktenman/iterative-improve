@@ -32,10 +32,6 @@ def detect_platform() -> Platform:
     return Platform.GITHUB
 
 
-def has_changes() -> bool:
-    return bool(changed_files())
-
-
 def changed_files(cwd: str | None = None) -> list[str]:
     cmd = ["git"]
     if cwd:
@@ -44,6 +40,11 @@ def changed_files(cwd: str | None = None) -> list[str]:
     lines = run(cmd).stdout.split("\n")
     paths = (line[3:].strip() for line in lines if line.strip())
     return [p for p in paths if not p.startswith(".improve-loop/")]
+
+
+def changed_files_since(baseline: list[str], cwd: str | None = None) -> list[str]:
+    pre_existing = set(baseline)
+    return [f for f in changed_files(cwd) if f not in pre_existing]
 
 
 def diff_vs_main() -> str:
@@ -59,8 +60,7 @@ def conflict_files() -> list[str]:
     return [f for f in result.stdout.strip().split("\n") if f]
 
 
-def stage_tracked_changes() -> None:
-    files = changed_files()
+def stage_files(files: list[str]) -> None:
     if not files:
         return
     result = run(["git", "add", "--", *files])
@@ -68,9 +68,12 @@ def stage_tracked_changes() -> None:
         logger.warning("git] Failed to stage files: %s", result.stderr.strip())
 
 
-def commit_and_push(message: str, branch_name: str) -> bool:
-    stage_tracked_changes()
-    commit = run(["git", "commit", "-m", message])
+def commit_and_push(message: str, branch_name: str, files: list[str]) -> bool:
+    if not files:
+        logger.warning("git] Nothing to commit")
+        return False
+    stage_files(files)
+    commit = run(["git", "commit", "-m", message, "--", *files])
     if commit.returncode != 0:
         logger.warning("git] Commit failed: %s", commit.stderr.strip())
         return False
@@ -113,8 +116,8 @@ def sync_with_main(branch_name: str) -> bool:
     return _resolve_conflicts(branch_name)
 
 
-def _commit_resolution(output: str) -> bool:
-    stage_tracked_changes()
+def _commit_resolution(output: str, files: list[str]) -> bool:
+    stage_files(files)
     if run(["git", "commit", "--no-edit"]).returncode == 0:
         return True
     summary = extract_summary(output)
@@ -126,28 +129,29 @@ def _commit_resolution(output: str) -> bool:
     return run(["git", "commit", "-m", f"Resolve merge conflicts: {truncated}"]).returncode == 0
 
 
-def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, bool]:
+def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, list[str], bool]:
+    baseline = changed_files_since(conflicts)
     logger.info("%s] Asking Claude to resolve conflicts...", tag)
     try:
         output, _ = run_claude(build_conflict_prompt(conflicts))
-        return output, True
+        return output, changed_files_since(baseline), True
     except RuntimeError:
         logger.warning(
             "%s] Claude failed during conflict resolution, aborting merge", tag, exc_info=True
         )
         run(["git", "merge", "--abort"])
-        return "", False
+        return "", [], False
 
 
 def _resolve_and_commit(conflicts: list[str], tag: str) -> bool:
-    output, ok = _attempt_claude_resolution(conflicts, tag)
+    output, resolved, ok = _attempt_claude_resolution(conflicts, tag)
     if not ok:
         return False
     if has_conflicts():
         logger.error("%s] Conflicts remain after resolution attempt", tag)
         run(["git", "merge", "--abort"])
         return False
-    if not _commit_resolution(output):
+    if not _commit_resolution(output, resolved):
         logger.error("%s] Failed to commit resolution", tag)
         run(["git", "merge", "--abort"])
         return False
@@ -190,12 +194,12 @@ def resolve_existing_conflicts() -> bool:
         len(conflicts),
         ", ".join(conflicts[:5]),
     )
-    output, ok = _attempt_claude_resolution(conflicts, "git")
+    output, resolved, ok = _attempt_claude_resolution(conflicts, "git")
     if not ok:
         return False
     if has_conflicts():
         return _abort_merge_gracefully()
-    if not _commit_resolution(output):
+    if not _commit_resolution(output, resolved):
         logger.error("git] Failed to commit conflict resolution")
         run(["git", "merge", "--abort"])
         return False
