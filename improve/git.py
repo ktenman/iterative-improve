@@ -32,10 +32,6 @@ def detect_platform() -> Platform:
     return Platform.GITHUB
 
 
-def has_changes() -> bool:
-    return bool(changed_files())
-
-
 def changed_files(cwd: str | None = None) -> list[str]:
     cmd = ["git"]
     if cwd:
@@ -44,6 +40,19 @@ def changed_files(cwd: str | None = None) -> list[str]:
     lines = run(cmd).stdout.split("\n")
     paths = (line[3:].strip() for line in lines if line.strip())
     return [p for p in paths if not p.startswith(".improve-loop/")]
+
+
+def changed_files_since(baseline: list[str], cwd: str | None = None) -> list[str]:
+    pre_existing = set(baseline)
+    current = changed_files(cwd)
+    untouched = [f for f in current if f in pre_existing]
+    if untouched:
+        logger.info(
+            "git] Leaving %d pre-existing change(s) uncommitted: %s",
+            len(untouched),
+            ", ".join(untouched[:5]),
+        )
+    return [f for f in current if f not in pre_existing]
 
 
 def diff_vs_main() -> str:
@@ -59,8 +68,7 @@ def conflict_files() -> list[str]:
     return [f for f in result.stdout.strip().split("\n") if f]
 
 
-def stage_tracked_changes() -> None:
-    files = changed_files()
+def stage_files(files: list[str]) -> None:
     if not files:
         return
     result = run(["git", "add", "--", *files])
@@ -68,8 +76,8 @@ def stage_tracked_changes() -> None:
         logger.warning("git] Failed to stage files: %s", result.stderr.strip())
 
 
-def commit_and_push(message: str, branch_name: str) -> bool:
-    stage_tracked_changes()
+def commit_and_push(message: str, branch_name: str, files: list[str]) -> bool:
+    stage_files(files)
     commit = run(["git", "commit", "-m", message])
     if commit.returncode != 0:
         logger.warning("git] Commit failed: %s", commit.stderr.strip())
@@ -113,8 +121,8 @@ def sync_with_main(branch_name: str) -> bool:
     return _resolve_conflicts(branch_name)
 
 
-def _commit_resolution(output: str) -> bool:
-    stage_tracked_changes()
+def _commit_resolution(output: str, files: list[str]) -> bool:
+    stage_files(files)
     if run(["git", "commit", "--no-edit"]).returncode == 0:
         return True
     summary = extract_summary(output)
@@ -124,6 +132,11 @@ def _commit_resolution(output: str) -> bool:
         if last_space > 15:
             truncated = truncated[:last_space]
     return run(["git", "commit", "-m", f"Resolve merge conflicts: {truncated}"]).returncode == 0
+
+
+def _baseline_excluding(conflicts: list[str]) -> list[str]:
+    resolving = set(conflicts)
+    return [f for f in changed_files() if f not in resolving]
 
 
 def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, bool]:
@@ -140,6 +153,7 @@ def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, boo
 
 
 def _resolve_and_commit(conflicts: list[str], tag: str) -> bool:
+    baseline = _baseline_excluding(conflicts)
     output, ok = _attempt_claude_resolution(conflicts, tag)
     if not ok:
         return False
@@ -147,7 +161,7 @@ def _resolve_and_commit(conflicts: list[str], tag: str) -> bool:
         logger.error("%s] Conflicts remain after resolution attempt", tag)
         run(["git", "merge", "--abort"])
         return False
-    if not _commit_resolution(output):
+    if not _commit_resolution(output, changed_files_since(baseline)):
         logger.error("%s] Failed to commit resolution", tag)
         run(["git", "merge", "--abort"])
         return False
@@ -190,12 +204,13 @@ def resolve_existing_conflicts() -> bool:
         len(conflicts),
         ", ".join(conflicts[:5]),
     )
+    baseline = _baseline_excluding(conflicts)
     output, ok = _attempt_claude_resolution(conflicts, "git")
     if not ok:
         return False
     if has_conflicts():
         return _abort_merge_gracefully()
-    if not _commit_resolution(output):
+    if not _commit_resolution(output, changed_files_since(baseline)):
         logger.error("git] Failed to commit conflict resolution")
         run(["git", "merge", "--abort"])
         return False

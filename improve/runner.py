@@ -73,6 +73,7 @@ class IterationLoop:
         while not ci_passed and retries < MAX_CI_RETRIES:
             retries += 1
             logger.info("ci-fix] Attempt %d/%d...", retries, MAX_CI_RETRIES)
+            pre_existing = git.changed_files()
             try:
                 _, claude_time = claude.run_claude(
                     build_ci_fix_prompt(ci_errors), config=self.config
@@ -81,11 +82,14 @@ class IterationLoop:
                 logger.warning("ci-fix] Claude failed, stopping retries", exc_info=True)
                 break
             total_claude += claude_time
-            if not git.has_changes():
+            files = git.changed_files_since(pre_existing)
+            if not files:
                 logger.info("ci-fix] No fix produced")
                 break
             pre_push_id = ci.get_latest_run_id(self.state.branch, self.config)
-            if not git.commit_and_push(f"{commit_prefix} (attempt {retries})", self.state.branch):
+            if not git.commit_and_push(
+                f"{commit_prefix} (attempt {retries})", self.state.branch, files
+            ):
                 logger.warning("ci-fix] Push failed")
                 break
             ci_passed, ci_errors, ci_time = ci.wait_for_ci(
@@ -100,8 +104,9 @@ class IterationLoop:
         phase_start = time.monotonic()
         prompt = build_phase_prompt(phase, git.diff_vs_main(), self.state.context())
         logger.info("%s] Running...", phase)
+        pre_existing = git.changed_files()
         output, total_claude = claude.run_claude(prompt, config=self.config)
-        files = git.changed_files()
+        files = git.changed_files_since(pre_existing)
         if not files:
             logger.info("%s] No changes", phase)
             elapsed = time.monotonic() - phase_start
@@ -110,7 +115,7 @@ class IterationLoop:
         logger.info("%s] Changed %d file(s): %s", phase, len(files), ", ".join(files[:5]))
 
         pre_push_id = ci.get_latest_run_id(self.state.branch, self.config) if not skip_ci else None
-        pushed = git.commit_and_push(build_commit_message(phase, summary), self.state.branch)
+        pushed = git.commit_and_push(build_commit_message(phase, summary), self.state.branch, files)
         ci_passed, total_ci, retries = pushed, 0.0, 0
 
         if pushed and not skip_ci:

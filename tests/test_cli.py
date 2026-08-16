@@ -21,6 +21,7 @@ def _run_main(
         "improve.cli.require_tools": {},
         "improve.git.branch": {"return_value": "feature"},
         "improve.git.resolve_existing_conflicts": {"return_value": True},
+        "improve.git.changed_files": {"return_value": []},
         "improve.cli.run_preflight": {},
         "improve.git.sync_with_main": {"return_value": True},
         "improve.runner.IterationLoop.run": {},
@@ -226,6 +227,34 @@ class TestMain:
             main()
         assert exc_info.value.code == 1
 
+    def test_exits_when_working_tree_has_uncommitted_changes(self, monkeypatch):
+        with (
+            _run_main(
+                monkeypatch,
+                ["-n", "1", "--skip-ci"],
+                **{
+                    "improve.git.changed_files": {
+                        "return_value": ["docs/plans/notes.md", "scripts/scratch.ipynb"]
+                    }
+                },
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+        assert exc_info.value.code == 1
+
+    def test_resolves_pre_existing_conflicts_before_rejecting_a_dirty_tree(self, monkeypatch):
+        with (
+            _run_main(
+                monkeypatch,
+                ["-n", "1", "--skip-ci"],
+                **{"improve.git.changed_files": {"return_value": ["conflicted.py"]}},
+            ) as mocks,
+            pytest.raises(SystemExit),
+        ):
+            main()
+        mocks["improve.git.resolve_existing_conflicts"].assert_called_once()
+
     def test_accepts_minimum_valid_iterations(self, monkeypatch):
         with _run_main(monkeypatch, ["-n", "1", "--skip-ci"]) as mocks:
             main()
@@ -242,6 +271,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.git.branch", return_value="feature"),
             patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
@@ -261,6 +291,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.git.branch", return_value="feature"),
             patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
@@ -281,6 +312,7 @@ class TestMain:
             patch("improve.cli.require_tools"),
             patch("improve.git.branch", return_value="feature"),
             patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
@@ -305,6 +337,7 @@ class TestMain:
             patch("improve.cli.require_tools") as mock_require,
             patch("improve.git.branch", return_value="feature"),
             patch("improve.git.resolve_existing_conflicts", return_value=True),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.cli.run_preflight"),
             patch("improve.git.sync_with_main", return_value=True),
             patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,

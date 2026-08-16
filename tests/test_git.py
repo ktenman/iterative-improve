@@ -37,20 +37,27 @@ class TestDetectPlatform:
             assert git.detect_platform() == Platform.GITHUB
 
 
-class TestHasChanges:
-    def test_returns_true_when_porcelain_output_exists(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M file.py\n")) as mock_run:
-            assert git.has_changes() is True
+class TestChangedFilesSince:
+    def test_returns_only_files_that_changed_after_the_baseline(self):
+        with patch("improve.git.run", return_value=_cp(stdout=" M old.py\n M new.py\n")):
+            assert git.changed_files_since(["old.py"]) == ["new.py"]
 
-        mock_run.assert_called_once_with(["git", "status", "--porcelain", "--no-renames"])
+    def test_excludes_untracked_files_that_existed_before_the_baseline(self):
+        with patch("improve.git.run", return_value=_cp(stdout="?? notes.md\n?? scratch.ipynb\n")):
+            assert git.changed_files_since(["notes.md", "scratch.ipynb"]) == []
 
-    def test_returns_false_when_porcelain_output_is_empty(self):
-        with patch("improve.git.run", return_value=_cp(stdout="")):
-            assert git.has_changes() is False
+    def test_returns_all_changes_when_baseline_is_empty(self):
+        with patch("improve.git.run", return_value=_cp(stdout=" M a.py\n?? b.py\n")):
+            assert git.changed_files_since([]) == ["a.py", "b.py"]
 
-    def test_returns_false_when_only_improve_loop_files_changed(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M .improve-loop/state.json\n")):
-            assert git.has_changes() is False
+    def test_logs_the_pre_existing_changes_it_leaves_uncommitted(self, caplog):
+        with (
+            patch("improve.git.run", return_value=_cp(stdout="?? notes.md\n M a.py\n")),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            git.changed_files_since(["notes.md"])
+
+        assert "notes.md" in caplog.text
 
 
 class TestChangedFiles:
@@ -123,58 +130,53 @@ class TestConflictFiles:
             assert git.conflict_files() == expected
 
 
-class TestStageTrackedChanges:
-    def test_stages_all_changed_files(self):
-        with patch("improve.git.run") as mock_run:
-            mock_run.side_effect = [
-                _cp(stdout=" M app.py\n?? new.py\n"),
-                _cp(stdout=""),
-            ]
-            git.stage_tracked_changes()
-            add_args = mock_run.call_args_list[1][0][0]
-            assert add_args[:3] == ["git", "add", "--"]
-            assert set(add_args[3:]) == {"app.py", "new.py"}
+class TestStageFiles:
+    def test_stages_only_the_given_files(self):
+        with patch("improve.git.run", return_value=_cp()) as mock_run:
+            git.stage_files(["app.py", "new.py"])
 
-    def test_does_not_call_git_add_when_no_changes(self):
-        with patch("improve.git.run", return_value=_cp(stdout="")) as mock_run:
-            git.stage_tracked_changes()
-            assert mock_run.call_count == 1
+        mock_run.assert_called_once_with(["git", "add", "--", "app.py", "new.py"])
+
+    def test_does_not_call_git_add_when_no_files_given(self):
+        with patch("improve.git.run") as mock_run:
+            git.stage_files([])
+            mock_run.assert_not_called()
 
 
 class TestCommitAndPush:
     def test_returns_true_on_successful_commit_and_push(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(), _cp()]
-            assert git.commit_and_push("Fix bug", "feature") is True
+            assert git.commit_and_push("Fix bug", "feature", ["app.py"]) is True
 
         mock_run.assert_any_call(["git", "commit", "-m", "Fix bug"])
         mock_run.assert_any_call(["git", "push", "-u", "origin", "feature"])
 
     def test_returns_false_when_commit_fails(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run", return_value=_cp(returncode=1, stderr="err")),
         ):
-            assert git.commit_and_push("Fix bug", "feature") is False
+            assert git.commit_and_push("Fix bug", "feature", ["app.py"]) is False
 
     def test_returns_false_when_push_fails(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(), _cp(returncode=1, stderr="rejected")]
-            assert git.commit_and_push("Fix bug", "feature") is False
+            assert git.commit_and_push("Fix bug", "feature", ["app.py"]) is False
 
     def test_does_not_push_when_commit_fails(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.return_value = _cp(returncode=1, stderr="err")
-            git.commit_and_push("msg", "feature")
+            git.commit_and_push("msg", "feature", ["app.py"])
 
         assert mock_run.call_count == 1
 
@@ -258,9 +260,10 @@ class TestResolveConflicts:
     def test_resolves_conflicts_and_pushes(self):
         with (
             patch("improve.git.conflict_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("SUMMARY: Resolved", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Resolved"),
             patch("improve.git.run") as mock_run,
         ):
@@ -273,6 +276,7 @@ class TestResolveConflicts:
     def test_aborts_when_conflicts_remain_after_claude(self):
         with (
             patch("improve.git.conflict_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_conflicts", return_value=True),
             patch("improve.git.run", return_value=_cp()),
@@ -284,9 +288,10 @@ class TestResolveConflicts:
     def test_uses_fallback_commit_when_no_edit_fails(self):
         with (
             patch("improve.git.conflict_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Fixed"),
             patch("improve.git.run") as mock_run,
         ):
@@ -303,9 +308,10 @@ class TestResolveConflicts:
     def test_aborts_when_both_commit_attempts_fail(self):
         with (
             patch("improve.git.conflict_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Fixed"),
             patch("improve.git.run") as mock_run,
         ):
@@ -322,9 +328,10 @@ class TestResolveConflicts:
     def test_returns_false_when_push_fails_after_resolution(self):
         with (
             patch("improve.git.conflict_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Fixed"),
             patch("improve.git.run") as mock_run,
         ):
@@ -346,9 +353,10 @@ class TestResolveExistingConflicts:
     def test_resolves_conflicts_with_claude_and_commits(self):
         with (
             patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.has_conflicts", return_value=False),
             patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Fixed"),
             patch("improve.git.run", return_value=_cp()),
         ):
@@ -357,6 +365,7 @@ class TestResolveExistingConflicts:
     def test_aborts_merge_when_claude_fails_to_resolve(self):
         with (
             patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.has_conflicts", side_effect=[True, False]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.run", return_value=_cp()),
@@ -366,6 +375,7 @@ class TestResolveExistingConflicts:
     def test_returns_false_when_abort_also_fails(self):
         with (
             patch("improve.git.conflict_files", return_value=["ci.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.has_conflicts", side_effect=[True, True]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.run", return_value=_cp()),
@@ -699,12 +709,12 @@ class TestCommitResolutionTruncation:
         summary_40 = "A" * 40
         summary_60 = "A" * 60
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value=summary_60),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(returncode=1), _cp()]
-            git._commit_resolution("output")
+            git._commit_resolution("output", ["a.py"])
 
         fallback_msg = mock_run.call_args_list[1][0][0][3]
         summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
@@ -713,12 +723,12 @@ class TestCommitResolutionTruncation:
     def test_summary_shorter_than_40_not_truncated(self):
         short = "Fix merge"
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value=short),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(returncode=1), _cp()]
-            git._commit_resolution("output")
+            git._commit_resolution("output", ["a.py"])
 
         fallback_msg = mock_run.call_args_list[1][0][0][3]
         assert short in fallback_msg
@@ -727,14 +737,14 @@ class TestCommitResolutionTruncation:
 class TestCommitResolution:
     def test_returns_true_when_no_edit_commit_succeeds(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run", return_value=_cp()),
         ):
-            assert git._commit_resolution("output") is True
+            assert git._commit_resolution("output", ["a.py"]) is True
 
     def test_uses_fallback_commit_when_no_edit_fails(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="Fixed conflicts"),
             patch("improve.git.run") as mock_run,
         ):
@@ -742,7 +752,7 @@ class TestCommitResolution:
                 _cp(returncode=1),
                 _cp(),
             ]
-            result = git._commit_resolution("output")
+            result = git._commit_resolution("output", ["a.py"])
 
         assert result is True
         fallback_cmd = mock_run.call_args_list[1][0][0]
@@ -752,12 +762,12 @@ class TestCommitResolution:
     def test_truncates_summary_to_40_chars_in_fallback(self):
         long_summary = "A" * 60
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value=long_summary),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(returncode=1), _cp()]
-            git._commit_resolution("output")
+            git._commit_resolution("output", ["a.py"])
 
         fallback_msg = mock_run.call_args_list[1][0][0][3]
         summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
@@ -766,12 +776,12 @@ class TestCommitResolution:
     def test_truncates_at_word_boundary_when_space_found_after_position_15(self):
         long_summary = "Resolved authentication conflicts in middleware layer code"
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value=long_summary),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(returncode=1), _cp()]
-            git._commit_resolution("output")
+            git._commit_resolution("output", ["a.py"])
 
         fallback_msg = mock_run.call_args_list[1][0][0][3]
         summary_part = fallback_msg.replace("Resolve merge conflicts: ", "")
@@ -780,12 +790,12 @@ class TestCommitResolution:
 
     def test_returns_false_when_both_commits_fail(self):
         with (
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="x"),
             patch("improve.git.run") as mock_run,
         ):
             mock_run.side_effect = [_cp(returncode=1), _cp(returncode=1)]
-            assert git._commit_resolution("output") is False
+            assert git._commit_resolution("output", ["a.py"]) is False
 
 
 class TestResolveConflictsEdgeCases:
@@ -793,6 +803,7 @@ class TestResolveConflictsEdgeCases:
         files = [f"f{i}.py" for i in range(10)]
         with (
             patch("improve.git.conflict_files", return_value=files),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_conflicts", return_value=True),
             patch("improve.git.run", return_value=_cp()),
@@ -806,6 +817,7 @@ class TestResolveConflictsEdgeCases:
     def test_aborts_merge_when_conflicts_remain(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_conflicts", return_value=True),
             patch("improve.git.run", return_value=_cp()) as mock_run,
@@ -817,9 +829,10 @@ class TestResolveConflictsEdgeCases:
     def test_aborts_merge_when_commit_fails(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.extract_summary", return_value="x"),
             patch("improve.git.run") as mock_run,
         ):
@@ -831,6 +844,7 @@ class TestResolveConflictsEdgeCases:
     def test_returns_false_and_aborts_merge_when_claude_raises_runtime_error(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", side_effect=RuntimeError("Claude crashed")),
             patch("improve.git.run", return_value=_cp()) as mock_run,
         ):
@@ -844,6 +858,7 @@ class TestResolveExistingConflictsEdgeCases:
     def test_returns_false_when_commit_resolution_fails(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.has_conflicts", return_value=False),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git._commit_resolution", return_value=False),
@@ -854,6 +869,7 @@ class TestResolveExistingConflictsEdgeCases:
     def test_returns_false_and_aborts_merge_when_claude_raises_runtime_error(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.run_claude", side_effect=RuntimeError("Claude crashed")),
             patch("improve.git.run", return_value=_cp()) as mock_run,
         ):
@@ -865,6 +881,7 @@ class TestResolveExistingConflictsEdgeCases:
     def test_calls_merge_abort_when_commit_fails(self):
         with (
             patch("improve.git.conflict_files", return_value=["a.py"]),
+            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.has_conflicts", return_value=False),
             patch("improve.git.run_claude", return_value=("", 1.0)),
             patch("improve.git._commit_resolution", return_value=False),
@@ -880,7 +897,7 @@ class TestResolveAndCommit:
         with (
             patch("improve.git.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
             patch("improve.git.has_conflicts", return_value=False),
-            patch("improve.git.stage_tracked_changes"),
+            patch("improve.git.stage_files"),
             patch("improve.git.run", return_value=_cp()),
         ):
             assert git._resolve_and_commit(["file.py"], "test") is True

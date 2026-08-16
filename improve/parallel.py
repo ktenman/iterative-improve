@@ -200,7 +200,8 @@ def run_parallel_batch(
         else:
             message = "Improve code quality"
 
-        if not git.commit_and_push(message, branch):
+        applied = sorted({f for r in changed for f in r.files})
+        if not git.commit_and_push(message, branch, applied):
             logger.warning("loop] Stopping: push failed")
             return False
 

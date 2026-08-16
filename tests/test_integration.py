@@ -35,7 +35,8 @@ class TestBoundaryIntegration:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude") as mock_claude,
-            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
+            patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=True),
         ):
             mock_claude.return_value = ("SUMMARY: Extracted helper", 1.5)
@@ -50,7 +51,8 @@ class TestBoundaryIntegration:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude") as mock_claude,
-            patch("improve.git.changed_files", side_effect=[["file.py"], []]),
+            patch("improve.git.changed_files", return_value=[]),
+            patch("improve.git.changed_files_since", side_effect=[["file.py"], []]),
             patch("improve.git.commit_and_push", return_value=True),
             patch("improve.git.sync_with_main", return_value=True),
         ):
@@ -81,9 +83,9 @@ class TestBoundaryIntegration:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude") as mock_claude,
-            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
+            patch("improve.git.changed_files_since", side_effect=[["file.py"], []]),
             patch("improve.git.commit_and_push", return_value=True),
-            patch("improve.git.has_changes", return_value=False),
             patch("improve.git.sync_with_main", return_value=True),
             patch("time.sleep"),
             patch("time.monotonic", side_effect=itertools.count()),
@@ -98,7 +100,8 @@ class TestBoundaryIntegration:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude") as mock_claude,
-            patch("improve.git.changed_files", return_value=["file.py"]),
+            patch("improve.git.changed_files", return_value=[]),
+            patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=True),
             patch("improve.git.sync_with_main", return_value=True),
         ):
