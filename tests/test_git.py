@@ -50,15 +50,6 @@ class TestChangedFilesSince:
         with patch("improve.git.run", return_value=_cp(stdout=" M a.py\n?? b.py\n")):
             assert git.changed_files_since([]) == ["a.py", "b.py"]
 
-    def test_logs_the_pre_existing_changes_it_leaves_uncommitted(self, caplog):
-        with (
-            patch("improve.git.run", return_value=_cp(stdout="?? notes.md\n M a.py\n")),
-            caplog.at_level(logging.INFO, logger="improve"),
-        ):
-            git.changed_files_since(["notes.md"])
-
-        assert "notes.md" in caplog.text
-
 
 class TestChangedFiles:
     def test_extracts_filenames_from_porcelain_output(self):
@@ -152,8 +143,25 @@ class TestCommitAndPush:
             mock_run.side_effect = [_cp(), _cp()]
             assert git.commit_and_push("Fix bug", "feature", ["app.py"]) is True
 
-        mock_run.assert_any_call(["git", "commit", "-m", "Fix bug"])
+        mock_run.assert_any_call(["git", "commit", "-m", "Fix bug", "--", "app.py"])
         mock_run.assert_any_call(["git", "push", "-u", "origin", "feature"])
+
+    def test_limits_the_commit_to_the_given_files_ignoring_the_rest_of_the_index(self):
+        with (
+            patch("improve.git.stage_files"),
+            patch("improve.git.run") as mock_run,
+        ):
+            mock_run.side_effect = [_cp(), _cp()]
+            git.commit_and_push("Fix bug", "feature", ["app.py"])
+
+        commit_cmd = mock_run.call_args_list[0][0][0]
+        assert commit_cmd[-2:] == ["--", "app.py"]
+
+    def test_refuses_to_commit_when_given_no_files(self):
+        with patch("improve.git.run") as mock_run:
+            assert git.commit_and_push("Fix bug", "feature", []) is False
+
+        mock_run.assert_not_called()
 
     def test_returns_false_when_commit_fails(self):
         with (

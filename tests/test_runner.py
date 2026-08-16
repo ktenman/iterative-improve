@@ -40,6 +40,12 @@ def _make_loop(
     )
 
 
+@pytest.fixture(autouse=True)
+def _clean_working_tree():
+    with patch("improve.git.changed_files", return_value=[]):
+        yield
+
+
 class TestShutdown:
     def test_saves_state_and_exits_with_code_130(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch)
@@ -94,7 +100,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("output", 1.5)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -111,7 +116,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=[]),
             caplog.at_level(logging.INFO, logger="improve"),
         ):
@@ -125,7 +129,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.git.commit_and_push", return_value=False),
             caplog.at_level(logging.WARNING, logger="improve"),
@@ -140,7 +143,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("out", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=42),
             patch("improve.git.commit_and_push", return_value=True),
@@ -154,7 +156,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("out", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -169,7 +170,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("out", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -189,7 +189,6 @@ class TestRetryCiFixes:
         loop = _make_loop(tmp_path, monkeypatch)
         with (
             patch("improve.claude.run_claude", return_value=("out", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True) as mock_push,
@@ -211,7 +210,6 @@ class TestRetryCiFixes:
 
         with (
             patch("improve.claude.run_claude", side_effect=count_calls),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -242,7 +240,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("NO_CHANGES_NEEDED", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
         ):
             result = loop.run_phase("simplify", 1, skip_ci=False)
 
@@ -254,7 +251,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed stuff", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=True),
             patch("improve.ci.wait_for_ci") as mock_wait,
@@ -269,7 +265,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed bug", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -286,7 +281,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Stuff", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=False),
             patch("improve.ci.wait_for_ci") as mock_wait,
@@ -301,7 +295,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed bug", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -318,7 +311,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed XSS", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=True),
         ):
@@ -331,7 +323,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 2.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.git.commit_and_push", return_value=True),
         ):
@@ -344,7 +335,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("nothing", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
         ):
             result = loop.run_phase("security", 1, skip_ci=True)
 
@@ -356,7 +346,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.ci.get_latest_run_id", return_value=42) as mock_get_id,
             patch("improve.git.commit_and_push", return_value=True),
@@ -372,7 +361,6 @@ class TestRunPhase:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Done", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["file.py"]),
             patch("improve.ci.get_latest_run_id") as mock_get_id,
             patch("improve.git.commit_and_push", return_value=True),
@@ -896,7 +884,6 @@ class TestMaxCiRetries:
 
         with (
             patch("improve.claude.run_claude", side_effect=track_claude),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["app.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -914,7 +901,6 @@ class TestRunPhaseCiTimeBoundary:
         with (
             patch("improve.git.diff_vs_main", return_value="f.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["f.py"]),
             patch("improve.git.commit_and_push", return_value=True),
             caplog.at_level(logging.INFO, logger="improve"),
@@ -929,7 +915,6 @@ class TestRunPhaseCiTimeBoundary:
         with (
             patch("improve.git.diff_vs_main", return_value="f.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["f.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -949,7 +934,6 @@ class TestRunPhaseNoChangesResult:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("nothing", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
         ):
             result = loop.run_phase("simplify", 1, skip_ci=False)
 
@@ -962,7 +946,6 @@ class TestRunPhaseNoChangesResult:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("nothing", 1.5)),
-            patch("improve.git.changed_files", return_value=[]),
         ):
             result = loop.run_phase("simplify", 1, skip_ci=False)
 
@@ -1012,7 +995,6 @@ class TestRunPhaseDetails:
         with (
             patch("improve.git.diff_vs_main", return_value="file.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fixed", 1.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["x.py"]),
             patch("improve.git.commit_and_push", return_value=True),
         ):
@@ -1027,7 +1009,6 @@ class TestRunPhaseDetails:
         with (
             patch("improve.git.diff_vs_main", return_value="f.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["f.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),
@@ -1045,7 +1026,6 @@ class TestRunPhaseDetails:
         with (
             patch("improve.git.diff_vs_main", return_value="f.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 2.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["f.py"]),
             patch("improve.git.commit_and_push", return_value=True),
             caplog.at_level(logging.INFO, logger="improve"),
@@ -1059,7 +1039,6 @@ class TestRunPhaseDetails:
         with (
             patch("improve.git.diff_vs_main", return_value="f.py"),
             patch("improve.claude.run_claude", return_value=("SUMMARY: Fix", 3.0)),
-            patch("improve.git.changed_files", return_value=[]),
             patch("improve.git.changed_files_since", return_value=["f.py"]),
             patch("improve.ci.get_latest_run_id", return_value=100),
             patch("improve.git.commit_and_push", return_value=True),

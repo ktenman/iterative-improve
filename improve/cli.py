@@ -111,13 +111,10 @@ def _require_clean_tree() -> None:
     dirty = git.changed_files()
     if not dirty:
         return
-    listed = "\n".join(f"    {f}" for f in dirty[:10])
-    if len(dirty) > 10:
-        listed += f"\n    ...and {len(dirty) - 10} more"
     logger.error(
-        "loop] Working tree is not clean — these files would be swept into the loop's commits."
-        " Commit, stash, or gitignore them first:\n%s",
-        listed,
+        "loop] Working tree not clean — commit, stash, or gitignore %d file(s) first: %s",
+        len(dirty),
+        ", ".join(dirty[:5]),
     )
     sys.exit(1)
 
