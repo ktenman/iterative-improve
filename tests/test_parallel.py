@@ -582,6 +582,16 @@ class TestMergeWorktreeResults:
         assert results[0].changes_made is False
         assert results[0].files == []
 
+    def test_marks_result_as_no_changes_when_nothing_was_applied(self):
+        results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
+        worktrees = {"simplify": "/tmp/wt/simplify"}
+
+        with patch("improve.parallel.git.apply_worktree_changes", return_value=[]):
+            _merge_worktree_results(results, worktrees)
+
+        assert results[0].changes_made is False
+        assert results[0].files == []
+
     def test_skips_results_with_no_changes(self):
         results = [PhaseResult(1, "simplify", False, [], "No changes", True, 0)]
         worktrees = {"simplify": "/tmp/wt/simplify"}

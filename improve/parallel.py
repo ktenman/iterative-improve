@@ -133,6 +133,7 @@ def _merge_worktree_results(
             result.files = []
             continue
         result.files = applied
+        result.changes_made = bool(applied)
         seen_files.update(applied)
     return sorted(seen_files)
 
