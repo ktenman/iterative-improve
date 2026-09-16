@@ -1,5 +1,6 @@
 import logging
 import shutil
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -571,6 +572,35 @@ class TestApplyWorktreeChangesRollback:
             "gone.py": "old gone",
             "z.py": "old z",
         }
+
+    @pytest.mark.parametrize(
+        "worktree_mode",
+        [
+            pytest.param(None, id="script_deleted"),
+            pytest.param(0o644, id="script_made_non_executable"),
+        ],
+    )
+    def test_restores_permissions_of_files_it_rolls_back(self, tmp_path, worktree_mode):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "z.py").write_text("new z")
+        if worktree_mode is not None:
+            (worktree / "run.sh").write_text("#!/bin/sh\n")
+            (worktree / "run.sh").chmod(worktree_mode)
+        main = tmp_path / "main"
+        main.mkdir()
+        script = main / "run.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+
+        with (
+            patch("improve.git.changed_files", return_value=["run.sh", "z.py"]),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert stat.S_IMODE(script.stat().st_mode) == 0o755
 
     def test_logs_files_it_cannot_restore_so_the_user_can_fix_them(self, tmp_path, caplog):
         worktree = tmp_path / "worktree"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import shutil
+import stat
 from pathlib import Path
 
 from improve.claude import run_claude
@@ -232,13 +233,11 @@ def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> 
     files = changed_files(worktree_path)
     if not files:
         return []
-    if main_root is None:
-        main_root = repo_root()
+    main_root = repo_root() if main_root is None else main_root
     if not main_root:
         logger.warning("git] Cannot determine repo root, skipping worktree apply")
         return []
-    worktree = Path(worktree_path).resolve()
-    main = Path(main_root).resolve()
+    worktree, main = Path(worktree_path).resolve(), Path(main_root).resolve()
     applied: list[str] = []
     with contextlib.ExitStack() as undo:
         for f in files:
@@ -247,7 +246,8 @@ def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> 
             if not src.is_relative_to(worktree) or not dst.is_relative_to(main):
                 logger.warning("git] Skipping path traversal: %s", f)
                 continue
-            undo.callback(_restore, dst, dst.read_bytes() if dst.exists() else None)
+            original = (dst.read_bytes(), dst.stat().st_mode) if dst.exists() else None
+            undo.callback(_restore, dst, original)
             if src.exists():
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dst)
@@ -258,12 +258,13 @@ def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> 
     return applied
 
 
-def _restore(path: Path, content: bytes | None) -> None:
+def _restore(path: Path, original: tuple[bytes, int] | None) -> None:
     try:
-        if content is None:
+        if original is None:
             path.unlink(missing_ok=True)
-        elif not path.is_file() or path.read_bytes() != content:
-            path.write_bytes(content)
+        elif not path.is_file() or (path.read_bytes(), path.stat().st_mode) != original:
+            path.write_bytes(original[0])
+            path.chmod(stat.S_IMODE(original[1]))
     except OSError:
         logger.exception("git] Failed to roll back %s, restore it manually", path)
 
