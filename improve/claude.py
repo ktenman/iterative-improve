@@ -118,8 +118,12 @@ def _classify_events(
 
         event_type = event.get("type", "")
         if event_type == "result":
-            errors = event.get("errors") or []
-            yield Result(event.get("result", ""), "; ".join(str(e) for e in errors))
+            text = event.get("result", "")
+            errors = "; ".join(str(e) for e in event.get("errors") or [])
+            if event.get("is_error"):
+                yield Result("", errors or text)
+                continue
+            yield Result(text, errors)
             continue
         if event_type != "stream_event":
             continue
@@ -180,8 +184,11 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
             "-p",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--include-partial-messages",
             "--dangerously-skip-permissions",
+            "--model",
+            "opus[1m]",
             "--effort",
             "max",
         ],

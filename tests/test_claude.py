@@ -1,5 +1,6 @@
 import json
 import logging
+from itertools import pairwise
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -260,6 +261,23 @@ class TestRunClaude:
         ):
             run_claude("prompt")
 
+    def test_raises_when_the_result_is_flagged_as_an_error_even_if_it_has_text(self):
+        event = json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "result": "There's an issue with the selected model (opus[1m]).",
+            }
+        )
+        proc = _make_process([event + "\n"], returncode=1)
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc),
+            patch("improve.claude.threading.Timer"),
+            pytest.raises(RuntimeError, match="issue with the selected model"),
+        ):
+            run_claude("prompt")
+
     def test_returns_result_on_nonzero_return_code_when_result_present(self, caplog):
         proc = _make_process([_result("partial output")], returncode=1, stderr="warning")
         with (
@@ -327,6 +345,27 @@ class TestRunClaude:
             run_claude("prompt")
 
         assert "--max-turns" not in mock_popen.call_args[0][0]
+
+    def test_passes_verbose_because_print_mode_rejects_stream_json_without_it(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt")
+
+        assert "--verbose" in mock_popen.call_args[0][0]
+
+    @pytest.mark.parametrize("flag, value", [("--model", "opus[1m]"), ("--effort", "max")])
+    def test_always_starts_claude_with_the_pinned_model_and_effort(self, flag, value):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt")
+
+        assert (flag, value) in pairwise(mock_popen.call_args[0][0])
 
     def test_suppresses_stdout_in_quiet_mode(self):
         proc = _make_process([_text_delta("Hello"), _result("")])
