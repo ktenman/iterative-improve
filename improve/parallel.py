@@ -113,7 +113,7 @@ def _merge_worktree_results(
 ) -> list[str]:
     seen_files: set[str] = set()
     main_root: str | None = None
-    for result in results:
+    for i, result in enumerate(results):
         if not result.changes_made:
             continue
         overlap = seen_files & set(result.files)
@@ -129,8 +129,9 @@ def _merge_worktree_results(
             applied = git.apply_worktree_changes(worktrees[result.phase], main_root)
         except OSError:
             logger.exception("parallel] Failed to apply changes from %s", result.phase)
-            result.changes_made = False
-            result.files = []
+            applied = []
+        if not applied:
+            results[i] = PhaseResult.crashed(result.iteration, result.phase)
             continue
         result.files = applied
         seen_files.update(applied)

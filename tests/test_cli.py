@@ -5,9 +5,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from improve.ci_gh import GitHubCI
+from improve.ci_glab import GitLabCI
 from improve.cli import _parse_args, _validate_phases, main
+from improve.config import Config
 from improve.runner import IterationLoop
 from improve.state import LoopState
+
+
+def _config_of(mocks: dict[str, MagicMock]) -> Config:
+    return mocks["improve.cli.IterationLoop"].call_args[1]["config"]
 
 
 @contextmanager
@@ -24,6 +31,7 @@ def _run_main(
         "improve.git.changed_files": {"return_value": []},
         "improve.cli.run_preflight": {},
         "improve.git.sync_with_main": {"return_value": True},
+        "improve.cli.IterationLoop": {"wraps": IterationLoop},
         "improve.runner.IterationLoop.run": {},
         "improve.runner.IterationLoop.install_signal_handlers": {},
     }
@@ -261,93 +269,31 @@ class TestMain:
             mocks["improve.runner.IterationLoop.run"].assert_called_once_with(1, 1)
 
     def test_passes_phase_timeout_to_config(self, monkeypatch):
-        monkeypatch.setattr(
-            "sys.argv", ["iterative-improve", "-n", "1", "--skip-ci", "--phase-timeout", "30"]
-        )
-        mock_loop = MagicMock(spec=IterationLoop)
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            patch("improve.git.branch", return_value="feature"),
-            patch("improve.git.resolve_existing_conflicts", return_value=True),
-            patch("improve.git.changed_files", return_value=[]),
-            patch("improve.cli.run_preflight"),
-            patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
-        ):
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--phase-timeout", "30"]) as mocks:
             main()
 
-        assert mock_cls.call_args[1]["config"].claude_timeout == 30
+        assert _config_of(mocks).claude_timeout == 30
 
     def test_passes_ci_timeout_to_config(self, monkeypatch):
-        monkeypatch.setattr(
-            "sys.argv", ["iterative-improve", "-n", "1", "--skip-ci", "--ci-timeout", "1"]
-        )
-        mock_loop = MagicMock(spec=IterationLoop)
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            patch("improve.git.branch", return_value="feature"),
-            patch("improve.git.resolve_existing_conflicts", return_value=True),
-            patch("improve.git.changed_files", return_value=[]),
-            patch("improve.cli.run_preflight"),
-            patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
-        ):
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-timeout", "1"]) as mocks:
             main()
 
-        assert mock_cls.call_args[1]["config"].ci_timeout == 60
+        assert _config_of(mocks).ci_timeout == 60
 
     def test_passes_ci_workflow_to_github_provider(self, monkeypatch):
-        monkeypatch.setattr(
-            "sys.argv",
-            ["iterative-improve", "-n", "1", "--skip-ci", "--ci-workflow", "Build"],
-        )
-        mock_loop = MagicMock(spec=IterationLoop)
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools"),
-            patch("improve.git.branch", return_value="feature"),
-            patch("improve.git.resolve_existing_conflicts", return_value=True),
-            patch("improve.git.changed_files", return_value=[]),
-            patch("improve.cli.run_preflight"),
-            patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
-        ):
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-workflow", "Build"]) as mocks:
             main()
 
-        from improve.ci_gh import GitHubCI
-
-        config = mock_cls.call_args[1]["config"]
-        assert isinstance(config.ci_provider, GitHubCI)
-        assert config.ci_provider._workflow == "Build"
+        provider = _config_of(mocks).ci_provider
+        assert isinstance(provider, GitHubCI)
+        assert provider._workflow == "Build"
 
     def test_uses_gitlab_provider_when_specified(self, monkeypatch):
-        monkeypatch.setattr(
-            "sys.argv",
-            ["iterative-improve", "-n", "1", "--skip-ci", "--ci-provider", "gitlab"],
-        )
-        mock_loop = MagicMock(spec=IterationLoop)
-        with (
-            patch("improve.cli._setup_logging"),
-            patch("improve.cli.check_for_update"),
-            patch("improve.cli.require_tools") as mock_require,
-            patch("improve.git.branch", return_value="feature"),
-            patch("improve.git.resolve_existing_conflicts", return_value=True),
-            patch("improve.git.changed_files", return_value=[]),
-            patch("improve.cli.run_preflight"),
-            patch("improve.git.sync_with_main", return_value=True),
-            patch("improve.cli.IterationLoop", return_value=mock_loop) as mock_cls,
-        ):
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-provider", "gitlab"]) as mocks:
             main()
-            from improve.ci_glab import GitLabCI
 
-            config = mock_cls.call_args[1]["config"]
-            assert isinstance(config.ci_provider, GitLabCI)
-            mock_require.assert_called_once_with("glab")
+        assert isinstance(_config_of(mocks).ci_provider, GitLabCI)
+        mocks["improve.cli.require_tools"].assert_called_once_with("glab")
 
     def test_uses_gh_tool_for_github_provider(self, monkeypatch):
         with _run_main(

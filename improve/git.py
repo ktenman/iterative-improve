@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
+import stat
 from pathlib import Path
 
 from improve.claude import run_claude
@@ -36,15 +38,15 @@ def changed_files(cwd: str | None = None) -> list[str]:
     cmd = ["git"]
     if cwd:
         cmd.extend(["-C", cwd])
-    cmd.extend(["status", "--porcelain", "--no-renames"])
-    lines = run(cmd).stdout.split("\n")
-    paths = (line[3:].strip() for line in lines if line.strip())
+    cmd.extend(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"])
+    entries = run(cmd).stdout.split("\0")
+    paths = (entry[3:] for entry in entries if entry)
     return [p for p in paths if not p.startswith(".improve-loop/")]
 
 
-def changed_files_since(baseline: list[str], cwd: str | None = None) -> list[str]:
+def changed_files_since(baseline: list[str]) -> list[str]:
     pre_existing = set(baseline)
-    return [f for f in changed_files(cwd) if f not in pre_existing]
+    return [f for f in changed_files() if f not in pre_existing]
 
 
 def diff_vs_main() -> str:
@@ -56,8 +58,8 @@ def has_conflicts() -> bool:
 
 
 def conflict_files() -> list[str]:
-    result = run(["git", "diff", "--name-only", "--diff-filter=U"])
-    return [f for f in result.stdout.strip().split("\n") if f]
+    result = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"])
+    return [f for f in result.stdout.split("\0") if f]
 
 
 def stage_files(files: list[str]) -> None:
@@ -130,11 +132,11 @@ def _commit_resolution(output: str, files: list[str]) -> bool:
 
 
 def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, list[str], bool]:
-    baseline = changed_files_since(conflicts)
+    unrelated_changes = changed_files_since(conflicts)
     logger.info("%s] Asking Claude to resolve conflicts...", tag)
     try:
         output, _ = run_claude(build_conflict_prompt(conflicts))
-        return output, changed_files_since(baseline), True
+        return output, changed_files_since(unrelated_changes), True
     except RuntimeError:
         logger.warning(
             "%s] Claude failed during conflict resolution, aborting merge", tag, exc_info=True
@@ -231,27 +233,40 @@ def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> 
     files = changed_files(worktree_path)
     if not files:
         return []
-    if main_root is None:
-        main_root = repo_root()
+    main_root = repo_root() if main_root is None else main_root
     if not main_root:
         logger.warning("git] Cannot determine repo root, skipping worktree apply")
         return []
-    worktree = Path(worktree_path).resolve()
-    main = Path(main_root).resolve()
+    worktree, main = Path(worktree_path).resolve(), Path(main_root).resolve()
     applied: list[str] = []
-    for f in files:
-        src = (worktree / f).resolve()
-        dst = (main / f).resolve()
-        if not src.is_relative_to(worktree) or not dst.is_relative_to(main):
-            logger.warning("git] Skipping path traversal: %s", f)
-            continue
-        if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        elif dst.exists():
-            dst.unlink()
-        applied.append(f)
+    with contextlib.ExitStack() as undo:
+        for f in files:
+            src = (worktree / f).resolve()
+            dst = (main / f).resolve()
+            if not src.is_relative_to(worktree) or not dst.is_relative_to(main):
+                logger.warning("git] Skipping path traversal: %s", f)
+                continue
+            original = (dst.read_bytes(), dst.stat().st_mode) if dst.exists() else None
+            undo.callback(_restore, dst, original)
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            elif dst.exists():
+                dst.unlink()
+            applied.append(f)
+        undo.pop_all()
     return applied
+
+
+def _restore(path: Path, original: tuple[bytes, int] | None) -> None:
+    try:
+        if original is None:
+            path.unlink(missing_ok=True)
+        elif not path.is_file() or (path.read_bytes(), path.stat().st_mode) != original:
+            path.write_bytes(original[0])
+            path.chmod(stat.S_IMODE(original[1]))
+    except OSError:
+        logger.exception("git] Failed to roll back %s, restore it manually", path)
 
 
 def squash_branch(branch_name: str, message: str) -> bool:

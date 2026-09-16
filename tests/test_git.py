@@ -1,4 +1,7 @@
 import logging
+import shutil
+import stat
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -39,47 +42,55 @@ class TestDetectPlatform:
 
 class TestChangedFilesSince:
     def test_returns_only_files_that_changed_after_the_baseline(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M old.py\n M new.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M old.py\0 M new.py\0")):
             assert git.changed_files_since(["old.py"]) == ["new.py"]
 
     def test_excludes_untracked_files_that_existed_before_the_baseline(self):
-        with patch("improve.git.run", return_value=_cp(stdout="?? notes.md\n?? scratch.ipynb\n")):
+        with patch("improve.git.run", return_value=_cp(stdout="?? notes.md\0?? scratch.ipynb\0")):
             assert git.changed_files_since(["notes.md", "scratch.ipynb"]) == []
 
     def test_returns_all_changes_when_baseline_is_empty(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M a.py\n?? b.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M a.py\0?? b.py\0")):
             assert git.changed_files_since([]) == ["a.py", "b.py"]
 
 
 class TestChangedFiles:
     def test_extracts_filenames_from_porcelain_output(self):
-        result = _cp(stdout=" M src/a.py\n?? src/b.py\n")
+        result = _cp(stdout=" M src/a.py\0?? src/b.py\0")
         with patch("improve.git.run", return_value=result) as mock_run:
             files = git.changed_files()
 
         assert files == ["src/a.py", "src/b.py"]
-        mock_run.assert_called_once_with(["git", "status", "--porcelain", "--no-renames"])
+        mock_run.assert_called_once_with(
+            ["git", "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"]
+        )
 
     def test_returns_empty_list_when_no_changes(self):
         with patch("improve.git.run", return_value=_cp(stdout="")):
             assert git.changed_files() == []
 
+    def test_lists_files_inside_new_directories_because_directories_cannot_be_copied(self):
+        with patch("improve.git.run", return_value=_cp()) as mock_run:
+            git.changed_files()
+
+        assert "--untracked-files=all" in mock_run.call_args[0][0]
+
     def test_excludes_improve_loop_directory_files(self):
-        result = _cp(stdout=" M src/a.py\n M .improve-loop/state.json\n?? .improve-loop/run.log\n")
+        result = _cp(stdout=" M src/a.py\0 M .improve-loop/state.json\0?? .improve-loop/run.log\0")
         with patch("improve.git.run", return_value=result):
             assert git.changed_files() == ["src/a.py"]
 
     def test_returns_empty_when_only_improve_loop_files_changed(self):
-        result = _cp(stdout=" M .improve-loop/state.json\n")
+        result = _cp(stdout=" M .improve-loop/state.json\0")
         with patch("improve.git.run", return_value=result):
             assert git.changed_files() == []
 
     @pytest.mark.parametrize(
         "porcelain,expected",
         [
-            (" M file.py\n", "file.py"),
-            ("A  new.py\n", "new.py"),
-            ("?? untracked.py\n", "untracked.py"),
+            (" M file.py\0", "file.py"),
+            ("A  new.py\0", "new.py"),
+            ("?? untracked.py\0", "untracked.py"),
         ],
     )
     def test_strips_status_prefix_from_porcelain_output(self, porcelain, expected):
@@ -87,6 +98,23 @@ class TestChangedFiles:
             files = git.changed_files()
 
         assert files == [expected]
+
+    @pytest.mark.parametrize(
+        ("path", "quoted"),
+        [
+            ("my file.py", '"my file.py"'),
+            ("café.py", '"caf\\303\\251.py"'),
+            (" leading space.py", '" leading space.py"'),
+        ],
+    )
+    def test_returns_unusual_paths_verbatim_because_git_quotes_them_in_line_output(
+        self, path, quoted
+    ):
+        def fake_git(cmd):
+            return _cp(stdout=f" M {path}\0" if "-z" in cmd else f" M {quoted}\n")
+
+        with patch("improve.git.run", side_effect=fake_git):
+            assert git.changed_files() == [path]
 
 
 class TestDiffVsMain:
@@ -99,7 +127,7 @@ class TestDiffVsMain:
 
 class TestHasConflicts:
     def test_returns_true_when_conflict_files_exist(self):
-        with patch("improve.git.run", return_value=_cp(stdout="file.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout="file.py\0")):
             assert git.has_conflicts() is True
 
     def test_returns_false_when_no_conflicts(self):
@@ -111,14 +139,21 @@ class TestConflictFiles:
     @pytest.mark.parametrize(
         "stdout,expected",
         [
-            ("a.py\nb.py\n", ["a.py", "b.py"]),
-            ("\n", []),
-            ("only.py\n", ["only.py"]),
+            ("a.py\0b.py\0", ["a.py", "b.py"]),
+            ("", []),
+            ("only.py\0", ["only.py"]),
         ],
     )
     def test_returns_conflict_files_from_git_output(self, stdout, expected):
         with patch("improve.git.run", return_value=_cp(stdout=stdout)):
             assert git.conflict_files() == expected
+
+    def test_returns_non_ascii_paths_verbatim_so_they_match_changed_files(self):
+        def fake_git(cmd):
+            return _cp(stdout="café.py\0" if "-z" in cmd else '"caf\\303\\251.py"\n')
+
+        with patch("improve.git.run", side_effect=fake_git):
+            assert git.conflict_files() == ["café.py"]
 
 
 class TestStageFiles:
@@ -146,18 +181,7 @@ class TestCommitAndPush:
         mock_run.assert_any_call(["git", "commit", "-m", "Fix bug", "--", "app.py"])
         mock_run.assert_any_call(["git", "push", "-u", "origin", "feature"])
 
-    def test_limits_the_commit_to_the_given_files_ignoring_the_rest_of_the_index(self):
-        with (
-            patch("improve.git.stage_files"),
-            patch("improve.git.run") as mock_run,
-        ):
-            mock_run.side_effect = [_cp(), _cp()]
-            git.commit_and_push("Fix bug", "feature", ["app.py"])
-
-        commit_cmd = mock_run.call_args_list[0][0][0]
-        assert commit_cmd[-2:] == ["--", "app.py"]
-
-    def test_refuses_to_commit_when_given_no_files(self):
+    def test_refuses_empty_file_list_because_a_bare_pathspec_commits_everything(self):
         with patch("improve.git.run") as mock_run:
             assert git.commit_and_push("Fix bug", "feature", []) is False
 
@@ -403,7 +427,7 @@ class TestCreateWorktree:
 
 class TestChangedFilesWithCwd:
     def test_returns_files_from_porcelain_output(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M src/a.py\n?? src/b.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M src/a.py\0?? src/b.py\0")):
             files = git.changed_files("/tmp/wt")
 
         assert "src/a.py" in files
@@ -532,6 +556,95 @@ class TestApplyWorktreeChanges:
 
         assert files == []
         assert not (main / "../../etc/passwd").exists()
+
+
+def _copy_failing_on(name: str):
+    copy = shutil.copy2
+
+    def fake_copy(src, dst):
+        if Path(src).name == name:
+            Path(dst).write_text("truncated")
+            raise OSError("No space left on device")
+        return copy(src, dst)
+
+    return fake_copy
+
+
+class TestApplyWorktreeChangesRollback:
+    def test_leaves_main_tree_untouched_when_a_later_file_fails_to_copy(self, tmp_path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "a.py").write_text("new a")
+        (worktree / "new.py").write_text("new file")
+        (worktree / "z.py").write_text("new z")
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / "a.py").write_text("old a")
+        (main / "gone.py").write_text("old gone")
+        (main / "z.py").write_text("old z")
+        changed = ["a.py", "gone.py", "new.py", "z.py"]
+
+        with (
+            patch("improve.git.changed_files", return_value=changed),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert {p.name: p.read_text() for p in main.iterdir()} == {
+            "a.py": "old a",
+            "gone.py": "old gone",
+            "z.py": "old z",
+        }
+
+    @pytest.mark.parametrize(
+        "worktree_mode",
+        [
+            pytest.param(None, id="script_deleted"),
+            pytest.param(0o644, id="script_made_non_executable"),
+        ],
+    )
+    def test_restores_permissions_of_files_it_rolls_back(self, tmp_path, worktree_mode):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "z.py").write_text("new z")
+        if worktree_mode is not None:
+            (worktree / "run.sh").write_text("#!/bin/sh\n")
+            (worktree / "run.sh").chmod(worktree_mode)
+        main = tmp_path / "main"
+        main.mkdir()
+        script = main / "run.sh"
+        script.write_text("#!/bin/sh\n")
+        script.chmod(0o755)
+
+        with (
+            patch("improve.git.changed_files", return_value=["run.sh", "z.py"]),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert stat.S_IMODE(script.stat().st_mode) == 0o755
+
+    def test_logs_files_it_cannot_restore_so_the_user_can_fix_them(self, tmp_path, caplog):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "a.py").write_text("new a")
+        (worktree / "z.py").write_text("new z")
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / "a.py").write_text("old a")
+
+        with (
+            patch("improve.git.changed_files", return_value=["a.py", "z.py"]),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            patch.object(Path, "write_bytes", side_effect=OSError("Read-only file system")),
+            caplog.at_level(logging.ERROR, logger="improve"),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert f"Failed to roll back {main.resolve() / 'a.py'}" in caplog.text
 
 
 class TestSquashBranch:
@@ -665,10 +778,10 @@ class TestChangedFilesSlicePrecision:
     @pytest.mark.parametrize(
         "raw,expected",
         [
-            (" M x.py\n", ["x.py"]),
-            ("?? y.py\n", ["y.py"]),
-            ("A  z.py\n", ["z.py"]),
-            ("MM a.py\n", ["a.py"]),
+            (" M x.py\0", ["x.py"]),
+            ("?? y.py\0", ["y.py"]),
+            ("A  z.py\0", ["z.py"]),
+            ("MM a.py\0", ["a.py"]),
         ],
     )
     def test_removes_exactly_three_char_prefix(self, raw, expected):
@@ -676,7 +789,7 @@ class TestChangedFilesSlicePrecision:
             assert git.changed_files() == expected
 
     def test_single_char_filename_preserved(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M x\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M x\0")):
             assert git.changed_files() == ["x"]
 
 
@@ -743,6 +856,15 @@ class TestCommitResolutionTruncation:
 
 
 class TestCommitResolution:
+    def test_commits_whole_index_because_git_forbids_partial_merge_commits(self):
+        with (
+            patch("improve.git.stage_files"),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            git._commit_resolution("output", ["a.py"])
+
+        mock_run.assert_called_once_with(["git", "commit", "--no-edit"])
+
     def test_returns_true_when_no_edit_commit_succeeds(self):
         with (
             patch("improve.git.stage_files"),
