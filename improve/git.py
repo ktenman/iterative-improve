@@ -36,7 +36,7 @@ def changed_files(cwd: str | None = None) -> list[str]:
     cmd = ["git"]
     if cwd:
         cmd.extend(["-C", cwd])
-    cmd.extend(["status", "--porcelain", "--no-renames"])
+    cmd.extend(["status", "--porcelain", "--no-renames", "--untracked-files=all"])
     lines = run(cmd).stdout.split("\n")
     paths = (line[3:].strip() for line in lines if line.strip())
     return [p for p in paths if not p.startswith(".improve-loop/")]

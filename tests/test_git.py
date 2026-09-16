@@ -58,11 +58,19 @@ class TestChangedFiles:
             files = git.changed_files()
 
         assert files == ["src/a.py", "src/b.py"]
-        mock_run.assert_called_once_with(["git", "status", "--porcelain", "--no-renames"])
+        mock_run.assert_called_once_with(
+            ["git", "status", "--porcelain", "--no-renames", "--untracked-files=all"]
+        )
 
     def test_returns_empty_list_when_no_changes(self):
         with patch("improve.git.run", return_value=_cp(stdout="")):
             assert git.changed_files() == []
+
+    def test_lists_files_inside_new_directories_because_directories_cannot_be_copied(self):
+        with patch("improve.git.run", return_value=_cp()) as mock_run:
+            git.changed_files()
+
+        assert "--untracked-files=all" in mock_run.call_args[0][0]
 
     def test_excludes_improve_loop_directory_files(self):
         result = _cp(stdout=" M src/a.py\n M .improve-loop/state.json\n?? .improve-loop/run.log\n")
