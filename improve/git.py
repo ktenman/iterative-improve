@@ -42,9 +42,9 @@ def changed_files(cwd: str | None = None) -> list[str]:
     return [p for p in paths if not p.startswith(".improve-loop/")]
 
 
-def changed_files_since(baseline: list[str], cwd: str | None = None) -> list[str]:
+def changed_files_since(baseline: list[str]) -> list[str]:
     pre_existing = set(baseline)
-    return [f for f in changed_files(cwd) if f not in pre_existing]
+    return [f for f in changed_files() if f not in pre_existing]
 
 
 def diff_vs_main() -> str:
@@ -130,11 +130,11 @@ def _commit_resolution(output: str, files: list[str]) -> bool:
 
 
 def _attempt_claude_resolution(conflicts: list[str], tag: str) -> tuple[str, list[str], bool]:
-    baseline = changed_files_since(conflicts)
+    unrelated_changes = changed_files_since(conflicts)
     logger.info("%s] Asking Claude to resolve conflicts...", tag)
     try:
         output, _ = run_claude(build_conflict_prompt(conflicts))
-        return output, changed_files_since(baseline), True
+        return output, changed_files_since(unrelated_changes), True
     except RuntimeError:
         logger.warning(
             "%s] Claude failed during conflict resolution, aborting merge", tag, exc_info=True

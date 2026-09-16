@@ -146,18 +146,7 @@ class TestCommitAndPush:
         mock_run.assert_any_call(["git", "commit", "-m", "Fix bug", "--", "app.py"])
         mock_run.assert_any_call(["git", "push", "-u", "origin", "feature"])
 
-    def test_limits_the_commit_to_the_given_files_ignoring_the_rest_of_the_index(self):
-        with (
-            patch("improve.git.stage_files"),
-            patch("improve.git.run") as mock_run,
-        ):
-            mock_run.side_effect = [_cp(), _cp()]
-            git.commit_and_push("Fix bug", "feature", ["app.py"])
-
-        commit_cmd = mock_run.call_args_list[0][0][0]
-        assert commit_cmd[-2:] == ["--", "app.py"]
-
-    def test_refuses_to_commit_when_given_no_files(self):
+    def test_refuses_empty_file_list_because_a_bare_pathspec_commits_everything(self):
         with patch("improve.git.run") as mock_run:
             assert git.commit_and_push("Fix bug", "feature", []) is False
 
@@ -743,6 +732,15 @@ class TestCommitResolutionTruncation:
 
 
 class TestCommitResolution:
+    def test_commits_whole_index_because_git_forbids_partial_merge_commits(self):
+        with (
+            patch("improve.git.stage_files"),
+            patch("improve.git.run", return_value=_cp()) as mock_run,
+        ):
+            git._commit_resolution("output", ["a.py"])
+
+        assert mock_run.call_args_list[0][0][0] == ["git", "commit", "--no-edit"]
+
     def test_returns_true_when_no_edit_commit_succeeds(self):
         with (
             patch("improve.git.stage_files"),
