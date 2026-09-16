@@ -223,7 +223,7 @@ class TestRunParallelBatch:
 
         assert result is True
 
-    def test_handles_oserror_when_applying_worktree_changes(self):
+    def test_retries_next_iteration_when_applying_worktree_changes_fails(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
         add_result = MagicMock()
 
@@ -249,9 +249,8 @@ class TestRunParallelBatch:
                 _test_config(),
             )
 
-        assert result is False
-        added = add_result.call_args[0][0]
-        assert added.changes_made is False
+        assert result is True
+        assert add_result.call_args[0][0].is_crashed
 
     def test_returns_false_when_push_fails(self):
         changed = PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)
@@ -576,7 +575,9 @@ class TestMergeWorktreeResults:
             pytest.param({"return_value": []}, id="apply_returns_nothing"),
         ],
     )
-    def test_marks_result_as_no_changes_when_nothing_was_applied(self, apply_outcome):
+    def test_marks_result_as_crashed_so_unapplied_changes_are_not_mistaken_for_convergence(
+        self, apply_outcome
+    ):
         results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
         worktrees = {"simplify": "/tmp/wt/simplify"}
 
@@ -586,8 +587,7 @@ class TestMergeWorktreeResults:
         ):
             _merge_worktree_results(results, worktrees)
 
-        assert results[0].changes_made is False
-        assert results[0].files == []
+        assert results[0] == PhaseResult.crashed(1, "simplify")
 
     def test_skips_results_with_no_changes(self):
         results = [PhaseResult(1, "simplify", False, [], "No changes", True, 0)]
