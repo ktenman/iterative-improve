@@ -38,9 +38,9 @@ def changed_files(cwd: str | None = None) -> list[str]:
     cmd = ["git"]
     if cwd:
         cmd.extend(["-C", cwd])
-    cmd.extend(["status", "--porcelain", "--no-renames", "--untracked-files=all"])
-    lines = run(cmd).stdout.split("\n")
-    paths = (line[3:].strip() for line in lines if line.strip())
+    cmd.extend(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"])
+    entries = run(cmd).stdout.split("\0")
+    paths = (entry[3:] for entry in entries if entry)
     return [p for p in paths if not p.startswith(".improve-loop/")]
 
 
@@ -58,8 +58,8 @@ def has_conflicts() -> bool:
 
 
 def conflict_files() -> list[str]:
-    result = run(["git", "diff", "--name-only", "--diff-filter=U"])
-    return [f for f in result.stdout.strip().split("\n") if f]
+    result = run(["git", "diff", "--name-only", "-z", "--diff-filter=U"])
+    return [f for f in result.stdout.split("\0") if f]
 
 
 def stage_files(files: list[str]) -> None:

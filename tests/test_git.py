@@ -42,27 +42,27 @@ class TestDetectPlatform:
 
 class TestChangedFilesSince:
     def test_returns_only_files_that_changed_after_the_baseline(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M old.py\n M new.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M old.py\0 M new.py\0")):
             assert git.changed_files_since(["old.py"]) == ["new.py"]
 
     def test_excludes_untracked_files_that_existed_before_the_baseline(self):
-        with patch("improve.git.run", return_value=_cp(stdout="?? notes.md\n?? scratch.ipynb\n")):
+        with patch("improve.git.run", return_value=_cp(stdout="?? notes.md\0?? scratch.ipynb\0")):
             assert git.changed_files_since(["notes.md", "scratch.ipynb"]) == []
 
     def test_returns_all_changes_when_baseline_is_empty(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M a.py\n?? b.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M a.py\0?? b.py\0")):
             assert git.changed_files_since([]) == ["a.py", "b.py"]
 
 
 class TestChangedFiles:
     def test_extracts_filenames_from_porcelain_output(self):
-        result = _cp(stdout=" M src/a.py\n?? src/b.py\n")
+        result = _cp(stdout=" M src/a.py\0?? src/b.py\0")
         with patch("improve.git.run", return_value=result) as mock_run:
             files = git.changed_files()
 
         assert files == ["src/a.py", "src/b.py"]
         mock_run.assert_called_once_with(
-            ["git", "status", "--porcelain", "--no-renames", "--untracked-files=all"]
+            ["git", "status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"]
         )
 
     def test_returns_empty_list_when_no_changes(self):
@@ -76,21 +76,21 @@ class TestChangedFiles:
         assert "--untracked-files=all" in mock_run.call_args[0][0]
 
     def test_excludes_improve_loop_directory_files(self):
-        result = _cp(stdout=" M src/a.py\n M .improve-loop/state.json\n?? .improve-loop/run.log\n")
+        result = _cp(stdout=" M src/a.py\0 M .improve-loop/state.json\0?? .improve-loop/run.log\0")
         with patch("improve.git.run", return_value=result):
             assert git.changed_files() == ["src/a.py"]
 
     def test_returns_empty_when_only_improve_loop_files_changed(self):
-        result = _cp(stdout=" M .improve-loop/state.json\n")
+        result = _cp(stdout=" M .improve-loop/state.json\0")
         with patch("improve.git.run", return_value=result):
             assert git.changed_files() == []
 
     @pytest.mark.parametrize(
         "porcelain,expected",
         [
-            (" M file.py\n", "file.py"),
-            ("A  new.py\n", "new.py"),
-            ("?? untracked.py\n", "untracked.py"),
+            (" M file.py\0", "file.py"),
+            ("A  new.py\0", "new.py"),
+            ("?? untracked.py\0", "untracked.py"),
         ],
     )
     def test_strips_status_prefix_from_porcelain_output(self, porcelain, expected):
@@ -98,6 +98,23 @@ class TestChangedFiles:
             files = git.changed_files()
 
         assert files == [expected]
+
+    @pytest.mark.parametrize(
+        ("path", "quoted"),
+        [
+            ("my file.py", '"my file.py"'),
+            ("café.py", '"caf\\303\\251.py"'),
+            (" leading space.py", '" leading space.py"'),
+        ],
+    )
+    def test_returns_unusual_paths_verbatim_because_git_quotes_them_in_line_output(
+        self, path, quoted
+    ):
+        def fake_git(cmd):
+            return _cp(stdout=f" M {path}\0" if "-z" in cmd else f" M {quoted}\n")
+
+        with patch("improve.git.run", side_effect=fake_git):
+            assert git.changed_files() == [path]
 
 
 class TestDiffVsMain:
@@ -110,7 +127,7 @@ class TestDiffVsMain:
 
 class TestHasConflicts:
     def test_returns_true_when_conflict_files_exist(self):
-        with patch("improve.git.run", return_value=_cp(stdout="file.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout="file.py\0")):
             assert git.has_conflicts() is True
 
     def test_returns_false_when_no_conflicts(self):
@@ -122,14 +139,21 @@ class TestConflictFiles:
     @pytest.mark.parametrize(
         "stdout,expected",
         [
-            ("a.py\nb.py\n", ["a.py", "b.py"]),
-            ("\n", []),
-            ("only.py\n", ["only.py"]),
+            ("a.py\0b.py\0", ["a.py", "b.py"]),
+            ("", []),
+            ("only.py\0", ["only.py"]),
         ],
     )
     def test_returns_conflict_files_from_git_output(self, stdout, expected):
         with patch("improve.git.run", return_value=_cp(stdout=stdout)):
             assert git.conflict_files() == expected
+
+    def test_returns_non_ascii_paths_verbatim_so_they_match_changed_files(self):
+        def fake_git(cmd):
+            return _cp(stdout="café.py\0" if "-z" in cmd else '"caf\\303\\251.py"\n')
+
+        with patch("improve.git.run", side_effect=fake_git):
+            assert git.conflict_files() == ["café.py"]
 
 
 class TestStageFiles:
@@ -403,7 +427,7 @@ class TestCreateWorktree:
 
 class TestChangedFilesWithCwd:
     def test_returns_files_from_porcelain_output(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M src/a.py\n?? src/b.py\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M src/a.py\0?? src/b.py\0")):
             files = git.changed_files("/tmp/wt")
 
         assert "src/a.py" in files
@@ -754,10 +778,10 @@ class TestChangedFilesSlicePrecision:
     @pytest.mark.parametrize(
         "raw,expected",
         [
-            (" M x.py\n", ["x.py"]),
-            ("?? y.py\n", ["y.py"]),
-            ("A  z.py\n", ["z.py"]),
-            ("MM a.py\n", ["a.py"]),
+            (" M x.py\0", ["x.py"]),
+            ("?? y.py\0", ["y.py"]),
+            ("A  z.py\0", ["z.py"]),
+            ("MM a.py\0", ["a.py"]),
         ],
     )
     def test_removes_exactly_three_char_prefix(self, raw, expected):
@@ -765,7 +789,7 @@ class TestChangedFilesSlicePrecision:
             assert git.changed_files() == expected
 
     def test_single_char_filename_preserved(self):
-        with patch("improve.git.run", return_value=_cp(stdout=" M x\n")):
+        with patch("improve.git.run", return_value=_cp(stdout=" M x\0")):
             assert git.changed_files() == ["x"]
 
 
