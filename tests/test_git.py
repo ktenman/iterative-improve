@@ -739,7 +739,7 @@ class TestCommitResolution:
         ):
             git._commit_resolution("output", ["a.py"])
 
-        assert mock_run.call_args_list[0][0][0] == ["git", "commit", "--no-edit"]
+        mock_run.assert_called_once_with(["git", "commit", "--no-edit"])
 
     def test_returns_true_when_no_edit_commit_succeeds(self):
         with (

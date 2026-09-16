@@ -129,9 +129,7 @@ def _merge_worktree_results(
             applied = git.apply_worktree_changes(worktrees[result.phase], main_root)
         except OSError:
             logger.exception("parallel] Failed to apply changes from %s", result.phase)
-            result.changes_made = False
-            result.files = []
-            continue
+            applied = []
         result.files = applied
         result.changes_made = bool(applied)
         seen_files.update(applied)

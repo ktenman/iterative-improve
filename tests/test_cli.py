@@ -13,10 +13,6 @@ from improve.runner import IterationLoop
 from improve.state import LoopState
 
 
-def _loop_class() -> dict[str, Any]:
-    return {"improve.cli.IterationLoop": {"return_value": MagicMock(spec=IterationLoop)}}
-
-
 def _config_of(mocks: dict[str, MagicMock]) -> Config:
     return mocks["improve.cli.IterationLoop"].call_args[1]["config"]
 
@@ -35,6 +31,7 @@ def _run_main(
         "improve.git.changed_files": {"return_value": []},
         "improve.cli.run_preflight": {},
         "improve.git.sync_with_main": {"return_value": True},
+        "improve.cli.IterationLoop": {"wraps": IterationLoop},
         "improve.runner.IterationLoop.run": {},
         "improve.runner.IterationLoop.install_signal_handlers": {},
     }
@@ -272,25 +269,19 @@ class TestMain:
             mocks["improve.runner.IterationLoop.run"].assert_called_once_with(1, 1)
 
     def test_passes_phase_timeout_to_config(self, monkeypatch):
-        with _run_main(
-            monkeypatch, ["-n", "1", "--skip-ci", "--phase-timeout", "30"], **_loop_class()
-        ) as mocks:
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--phase-timeout", "30"]) as mocks:
             main()
 
         assert _config_of(mocks).claude_timeout == 30
 
     def test_passes_ci_timeout_to_config(self, monkeypatch):
-        with _run_main(
-            monkeypatch, ["-n", "1", "--skip-ci", "--ci-timeout", "1"], **_loop_class()
-        ) as mocks:
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-timeout", "1"]) as mocks:
             main()
 
         assert _config_of(mocks).ci_timeout == 60
 
     def test_passes_ci_workflow_to_github_provider(self, monkeypatch):
-        with _run_main(
-            monkeypatch, ["-n", "1", "--skip-ci", "--ci-workflow", "Build"], **_loop_class()
-        ) as mocks:
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-workflow", "Build"]) as mocks:
             main()
 
         provider = _config_of(mocks).ci_provider
@@ -298,9 +289,7 @@ class TestMain:
         assert provider._workflow == "Build"
 
     def test_uses_gitlab_provider_when_specified(self, monkeypatch):
-        with _run_main(
-            monkeypatch, ["-n", "1", "--skip-ci", "--ci-provider", "gitlab"], **_loop_class()
-        ) as mocks:
+        with _run_main(monkeypatch, ["-n", "1", "--skip-ci", "--ci-provider", "gitlab"]) as mocks:
             main()
 
         assert isinstance(_config_of(mocks).ci_provider, GitLabCI)

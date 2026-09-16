@@ -569,24 +569,21 @@ class TestMergeWorktreeResults:
 
         assert results[0].files == ["a.py"]
 
-    def test_marks_result_as_no_changes_on_oserror(self):
+    @pytest.mark.parametrize(
+        "apply_outcome",
+        [
+            pytest.param({"side_effect": OSError("denied")}, id="apply_raises_oserror"),
+            pytest.param({"return_value": []}, id="apply_returns_nothing"),
+        ],
+    )
+    def test_marks_result_as_no_changes_when_nothing_was_applied(self, apply_outcome):
         results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
         worktrees = {"simplify": "/tmp/wt/simplify"}
 
-        with patch(
-            "improve.parallel.git.apply_worktree_changes",
-            side_effect=OSError("denied"),
+        with (
+            patch("improve.parallel.git.repo_root", return_value="/repo"),
+            patch("improve.parallel.git.apply_worktree_changes", **apply_outcome),
         ):
-            _merge_worktree_results(results, worktrees)
-
-        assert results[0].changes_made is False
-        assert results[0].files == []
-
-    def test_marks_result_as_no_changes_when_nothing_was_applied(self):
-        results = [PhaseResult(1, "simplify", True, ["a.py"], "Fixed", True, 0)]
-        worktrees = {"simplify": "/tmp/wt/simplify"}
-
-        with patch("improve.parallel.git.apply_worktree_changes", return_value=[]):
             _merge_worktree_results(results, worktrees)
 
         assert results[0].changes_made is False
