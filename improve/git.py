@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
 from pathlib import Path
@@ -239,19 +240,32 @@ def apply_worktree_changes(worktree_path: str, main_root: str | None = None) -> 
     worktree = Path(worktree_path).resolve()
     main = Path(main_root).resolve()
     applied: list[str] = []
-    for f in files:
-        src = (worktree / f).resolve()
-        dst = (main / f).resolve()
-        if not src.is_relative_to(worktree) or not dst.is_relative_to(main):
-            logger.warning("git] Skipping path traversal: %s", f)
-            continue
-        if src.exists():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        elif dst.exists():
-            dst.unlink()
-        applied.append(f)
+    with contextlib.ExitStack() as undo:
+        for f in files:
+            src = (worktree / f).resolve()
+            dst = (main / f).resolve()
+            if not src.is_relative_to(worktree) or not dst.is_relative_to(main):
+                logger.warning("git] Skipping path traversal: %s", f)
+                continue
+            undo.callback(_restore, dst, dst.read_bytes() if dst.exists() else None)
+            if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
+            elif dst.exists():
+                dst.unlink()
+            applied.append(f)
+        undo.pop_all()
     return applied
+
+
+def _restore(path: Path, content: bytes | None) -> None:
+    try:
+        if content is None:
+            path.unlink(missing_ok=True)
+        elif not path.is_file() or path.read_bytes() != content:
+            path.write_bytes(content)
+    except OSError:
+        logger.exception("git] Failed to roll back %s, restore it manually", path)
 
 
 def squash_branch(branch_name: str, message: str) -> bool:

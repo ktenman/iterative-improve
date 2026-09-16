@@ -1,4 +1,6 @@
 import logging
+import shutil
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -529,6 +531,66 @@ class TestApplyWorktreeChanges:
 
         assert files == []
         assert not (main / "../../etc/passwd").exists()
+
+
+def _copy_failing_on(name: str):
+    copy = shutil.copy2
+
+    def fake_copy(src, dst):
+        if Path(src).name == name:
+            Path(dst).write_text("truncated")
+            raise OSError("No space left on device")
+        return copy(src, dst)
+
+    return fake_copy
+
+
+class TestApplyWorktreeChangesRollback:
+    def test_leaves_main_tree_untouched_when_a_later_file_fails_to_copy(self, tmp_path):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "a.py").write_text("new a")
+        (worktree / "new.py").write_text("new file")
+        (worktree / "z.py").write_text("new z")
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / "a.py").write_text("old a")
+        (main / "gone.py").write_text("old gone")
+        (main / "z.py").write_text("old z")
+        changed = ["a.py", "gone.py", "new.py", "z.py"]
+
+        with (
+            patch("improve.git.changed_files", return_value=changed),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert {p.name: p.read_text() for p in main.iterdir()} == {
+            "a.py": "old a",
+            "gone.py": "old gone",
+            "z.py": "old z",
+        }
+
+    def test_logs_files_it_cannot_restore_so_the_user_can_fix_them(self, tmp_path, caplog):
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / "a.py").write_text("new a")
+        (worktree / "z.py").write_text("new z")
+        main = tmp_path / "main"
+        main.mkdir()
+        (main / "a.py").write_text("old a")
+
+        with (
+            patch("improve.git.changed_files", return_value=["a.py", "z.py"]),
+            patch("improve.git.shutil.copy2", side_effect=_copy_failing_on("z.py")),
+            patch.object(Path, "write_bytes", side_effect=OSError("Read-only file system")),
+            caplog.at_level(logging.ERROR, logger="improve"),
+            pytest.raises(OSError),
+        ):
+            git.apply_worktree_changes(str(worktree), main_root=str(main))
+
+        assert f"Failed to roll back {main.resolve() / 'a.py'}" in caplog.text
 
 
 class TestSquashBranch:
