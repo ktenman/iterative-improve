@@ -112,8 +112,6 @@ def _symbol_key(symbol: str) -> _SymbolKey:
     if not parts:
         return _SymbolKey("", "")
     name = parts[-1]
-    if name.startswith("__") and name.endswith("__"):
-        return _SymbolKey("", ".".join(parts[-2:]))
     return _SymbolKey(parts[-2] if len(parts) > 1 else "", name)
 
 

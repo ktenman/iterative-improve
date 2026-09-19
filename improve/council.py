@@ -75,10 +75,13 @@ class CouncilIteration:
             return self._converged("No findings left")
         agreement = run_rounds(findings, self.ask)
         self._discard_stray_edits()
-        if len(agreement.unanswered) == len(findings):
-            raise RuntimeError(f"Neither reviewer answered any of the {len(findings)} finding(s)")
         self._record("skipped", agreement.skipped)
         self._record("disputed", [(finding, NO_AGREEMENT) for finding in agreement.disputed])
+        if agreement.unanswered and not agreement.fixes:
+            raise RuntimeError(
+                f"{len(agreement.unanswered)} finding(s) went unanswered and "
+                "nothing was agreed to fix"
+            )
         if not agreement.fixes:
             return self._converged("No fixes agreed")
         return self._fix(agreement.fixes)

@@ -222,7 +222,31 @@ class TestConvergence:
         assert keep_going is True
         assert loop.state.results[-1]["summary"] == CRASHED_SUMMARY
         assert "loop] Converged: no fixes agreed" not in caplog.messages
-        assert "Neither reviewer answered any of the 1 finding(s)" in caplog.text
+        assert "1 finding(s) went unanswered and nothing was agreed to fix" in caplog.text
+        agents.fix.assert_not_called()
+
+    def test_retries_instead_of_converging_when_a_finding_is_unanswered_and_another_skipped(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        loop = _loop(tmp_path, monkeypatch)
+        second = {**FINDING, "symbol": "save", "line": 40, "title": "Loses data"}
+
+        def replies(name, pick):
+            data = _replies(name, decision="skip", pick=pick)
+            data["findings"] = {"findings": [FINDING, second]}
+            return data
+
+        with (
+            _agents(claude=replies("Claude", "mine"), codex=replies("Codex", "theirs")) as agents,
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            keep_going = run_iteration(loop, 1, ["review"])
+
+        assert keep_going is True
+        assert loop.state.results[-1]["summary"] == CRASHED_SUMMARY
+        assert "loop] Converged: no fixes agreed" not in caplog.messages
+        assert "1 finding(s) went unanswered and nothing was agreed to fix" in caplog.text
+        assert [e["outcome"] for e in loop.state.ledger] == ["skipped"]
         agents.fix.assert_not_called()
 
     def test_records_disputed_findings_without_fixing_them(self, tmp_path, monkeypatch, caplog):

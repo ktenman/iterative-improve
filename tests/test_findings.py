@@ -78,6 +78,9 @@ class TestSamePlace:
     def test_the_same_dunder_method_of_the_same_class_is_one_place(self):
         assert same_place(Place("a.py", "pkg.Job.__init__", 11), Place("a.py", "Job.__init__", 40))
 
+    def test_an_unqualified_dunder_matches_the_same_dunder_of_a_named_class(self):
+        assert same_place(Place("a.py", "__init__", 11), Place("a.py", "Council.__init__", 90))
+
     def test_a_name_mangled_method_is_matched_by_its_name(self):
         assert same_place(Place("a.py", "Job.__secret", 11), Place("a.py", "__secret", 40))
 
