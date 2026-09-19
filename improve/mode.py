@@ -5,3 +5,4 @@ class Mode(Enum):
     SEQUENTIAL = "sequential"
     BATCH = "batch"
     PARALLEL = "parallel"
+    COUNCIL = "council"

@@ -4,7 +4,8 @@ from dataclasses import asdict
 import pytest
 
 from improve import color
-from improve.state import LoopState, PhaseResult, format_summary
+from improve.state import CRASHED_SUMMARY, LedgerEntry, LoopState, PhaseResult, format_summary
+from tests.conftest import _state
 
 
 class TestPhaseResult:
@@ -319,3 +320,147 @@ class TestCiLabel:
         result = _ci_label(r)
         assert expected_in in result
         assert expected_not_in not in result
+
+
+def _entry(outcome="fixed", symbol="load"):
+    return LedgerEntry(
+        iteration=1,
+        outcome=outcome,
+        phase="review",
+        severity="high",
+        file="app.py",
+        symbol=symbol,
+        line=12,
+        title="Unchecked None",
+        reason="r",
+    )
+
+
+class TestLedger:
+    def test_settle_appends_entries_as_dicts_and_saves(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+
+        state.settle([_entry(), _entry("skipped")])
+
+        assert state.ledger == [asdict(_entry()), asdict(_entry("skipped"))]
+        saved = json.loads((tmp_path / "state.json").read_text())
+        assert saved["ledger"] == state.ledger
+
+    def test_save_and_load_round_trips_the_ledger(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.settle([_entry("disputed")])
+
+        loaded = LoopState.load()
+
+        assert loaded is not None
+        assert loaded.ledger == [asdict(_entry("disputed"))]
+
+    def test_state_files_without_a_ledger_still_load(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
+        (tmp_path / "state.json").write_text(
+            json.dumps({"branch": "feat", "started_at": "2025-01-01", "results": []})
+        )
+
+        loaded = LoopState.load()
+
+        assert loaded is not None
+        assert loaded.ledger == []
+
+    def test_a_new_state_starts_with_an_empty_ledger(self):
+        assert LoopState(branch="f", started_at="s").ledger == []
+
+
+class TestCrashedLast:
+    def test_is_false_without_results(self):
+        assert LoopState(branch="f", started_at="s").crashed_last("council") is False
+
+    def test_is_true_when_the_last_result_is_a_crash_of_that_phase(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.crashed(1, "council"))
+
+        assert state.crashed_last("council") is True
+
+    def test_is_false_when_the_crash_was_in_another_phase(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.crashed(1, "review"))
+
+        assert state.crashed_last("council") is False
+
+    def test_is_false_when_the_last_result_did_not_crash(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.crashed(1, "council"))
+        state.add(PhaseResult.no_changes(2, "council"))
+
+        assert state.crashed_last("council") is False
+
+    def test_crashed_results_use_the_shared_summary(self):
+        assert PhaseResult.crashed(1, "council").summary == CRASHED_SUMMARY == "Phase crashed"
+
+
+class TestCodexSeconds:
+    def test_defaults_to_zero(self):
+        assert PhaseResult(1, "review", False, [], "x", True, 0).codex_seconds == 0.0
+
+    def test_no_changes_factory_leaves_it_at_zero(self):
+        assert PhaseResult.no_changes(1, "review").codex_seconds == 0.0
+
+
+class TestFormatSummaryCouncil:
+    @pytest.fixture(autouse=True)
+    def _disable_color(self):
+        color.enabled = False
+
+    def test_shows_codex_time_after_claude_time_when_codex_ran(self):
+        result = asdict(
+            PhaseResult(1, "council", True, ["a.py"], "Fixed", True, 0, codex_seconds=75.0)
+        )
+
+        output = format_summary([result], 100.0)
+
+        assert "  Claude time:    0.0s\n  Codex time:     1m 15s\n  CI time:" in output
+
+    def test_hides_codex_time_when_codex_did_not_run(self):
+        result = asdict(PhaseResult(1, "review", True, ["a.py"], "Fixed", True, 0))
+
+        assert "Codex time" not in format_summary([result], 100.0)
+
+    def test_leaves_codex_time_out_of_the_overhead(self):
+        result = asdict(
+            PhaseResult(
+                1, "council", True, ["a.py"], "F", True, 0, claude_seconds=30.0, codex_seconds=20.0
+            )
+        )
+
+        assert "Overhead:       1m 10s" in format_summary([result], 100.0)
+
+    def test_lists_disputed_findings_before_the_file_paths(self):
+        ledger = [asdict(_entry("disputed")), asdict(_entry("fixed", symbol="save"))]
+
+        output = format_summary([], 1.0, ledger)
+
+        assert (
+            "\n\n  Disputed (left for you to decide):\n    - app.py:load  Unchecked None"
+            "\n\n  State:" in output
+        )
+        assert "app.py:save" not in output
+
+    def test_shows_the_line_of_a_disputed_finding_without_a_symbol(self):
+        output = format_summary([], 1.0, [asdict(_entry("disputed", symbol=""))])
+
+        assert "    - app.py:12  Unchecked None" in output
+
+    def test_omits_the_disputed_section_when_nothing_is_disputed(self):
+        assert "Disputed" not in format_summary([], 1.0, [asdict(_entry("skipped"))])
+
+    def test_formats_results_saved_before_codex_time_was_recorded(self):
+        result = asdict(PhaseResult(1, "review", True, ["a.py"], "Fixed", True, 0))
+        del result["codex_seconds"]
+
+        assert "Codex time" not in format_summary([result], 1.0)
+
+    def test_highlights_the_disputed_heading_when_color_is_on(self):
+        color.enabled = True
+
+        output = format_summary([], 1.0, [asdict(_entry("disputed"))])
+
+        assert f"{color.DARK_YELLOW}Disputed (left for you to decide):{color.RESET}" in output

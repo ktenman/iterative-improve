@@ -20,7 +20,12 @@ DARK_YELLOW = "\033[38;5;178m"
 DARK_RED = "\033[38;5;124m"
 GRAY = "\033[90m"
 
-PHASE_COLORS = {"simplify": DARK_GREEN, "review": DARK_YELLOW, "security": DARK_RED}
+PHASE_COLORS = {
+    "simplify": DARK_GREEN,
+    "review": DARK_YELLOW,
+    "security": DARK_RED,
+    "council": BOLD_WHITE,
+}
 TAG_COLORS = {
     "loop": BOLD_WHITE,
     "ci": CYAN,
@@ -28,6 +33,7 @@ TAG_COLORS = {
     "git": BLUE,
     "sync": BLUE,
     "claude": MAGENTA,
+    "codex": GREEN,
     "parallel": BOLD_WHITE,
     "signal": DARK_YELLOW,
     "update": GRAY,

@@ -1,16 +1,28 @@
 import logging
 import subprocess
-from unittest.mock import patch
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import improve.process
 from improve.process import (
     _check_preflight,
+    abort_on_first_failure,
     format_duration,
     require_tools,
     run,
     run_preflight,
+    terminate,
+    terminate_active,
+    track,
+    untrack,
 )
+
+
+def _raise(exc):
+    raise exc
 
 
 class TestRun:
@@ -79,24 +91,103 @@ class TestRun:
         assert len(logged_stderr[0].message) < 600
 
 
+class TestProcessTracking:
+    def test_terminates_every_tracked_process_with_its_own_tag(self):
+        claude_proc, codex_proc = MagicMock(), MagicMock()
+
+        with (
+            patch.object(
+                improve.process,
+                "_active_processes",
+                {claude_proc: "claude", codex_proc: "codex"},
+            ),
+            patch("improve.process.terminate") as mock_terminate,
+        ):
+            terminate_active()
+
+        terminated = {call.args for call in mock_terminate.call_args_list}
+        assert terminated == {(claude_proc, "claude"), (codex_proc, "codex")}
+
+    def test_does_nothing_when_no_process_is_tracked(self):
+        with (
+            patch.object(improve.process, "_active_processes", {}),
+            patch("improve.process.terminate") as mock_terminate,
+        ):
+            terminate_active()
+
+        mock_terminate.assert_not_called()
+
+    def test_an_untracked_process_is_no_longer_terminated(self):
+        proc = MagicMock()
+
+        with (
+            patch.object(improve.process, "_active_processes", {}),
+            patch("improve.process.terminate") as mock_terminate,
+        ):
+            track(proc, "claude")
+            untrack(proc)
+            terminate_active()
+
+        mock_terminate.assert_not_called()
+
+    def test_untracking_a_process_that_was_never_tracked_is_harmless(self):
+        with patch.object(improve.process, "_active_processes", {}):
+            untrack(MagicMock())
+
+
+class TestAbortOnFirstFailure:
+    def test_returns_quietly_when_every_future_succeeds(self):
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [pool.submit(lambda: 1), pool.submit(lambda: 2)]
+
+            assert abort_on_first_failure(futures) is None
+
+    def test_raises_the_original_failure(self):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_raise, RuntimeError("usage limit"))
+
+            with pytest.raises(RuntimeError, match="usage limit"):
+                abort_on_first_failure([future])
+
+    def test_terminates_the_other_agents_without_waiting_for_them(self):
+        release = threading.Event()
+
+        with (
+            patch("improve.process.terminate_active", side_effect=release.set) as terminated,
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            futures = [pool.submit(_raise, RuntimeError("died")), pool.submit(release.wait, 10)]
+
+            with pytest.raises(RuntimeError, match="died"):
+                abort_on_first_failure(futures)
+
+        terminated.assert_called_once_with()
+
+    def test_warns_that_the_other_agents_are_being_terminated(self, caplog):
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_raise, RuntimeError("died"))
+
+            with (
+                patch("improve.process.terminate_active"),
+                caplog.at_level(logging.WARNING, logger="improve"),
+                pytest.raises(RuntimeError),
+            ):
+                abort_on_first_failure([future])
+
+        assert caplog.messages == ["One parallel agent failed, terminating the others"]
+
+
 class TestRequireTools:
     def test_raises_system_exit_1_when_tool_missing(self):
         with (
             patch("improve.process.shutil.which", return_value=None),
             pytest.raises(SystemExit) as exc_info,
         ):
-            require_tools()
+            require_tools(["git", "claude", "gh"])
 
         assert exc_info.value.code == 1
 
-    @pytest.mark.parametrize(
-        ("ci_tool", "expected"),
-        [
-            ("gh", ["git", "claude", "gh"]),
-            ("glab", ["git", "claude", "glab"]),
-        ],
-    )
-    def test_checks_for_expected_tools(self, ci_tool, expected):
+    def test_checks_every_tool_it_is_given(self):
         calls = []
 
         def tracking_which(tool):
@@ -104,13 +195,13 @@ class TestRequireTools:
             return f"/usr/bin/{tool}"
 
         with patch("improve.process.shutil.which", side_effect=tracking_which):
-            require_tools(ci_tool=ci_tool)
+            require_tools(["git", "claude", "gh", "codex"])
 
-        assert calls == expected
+        assert calls == ["git", "claude", "gh", "codex"]
 
     def test_passes_when_all_tools_found(self):
         with patch("improve.process.shutil.which", return_value="/usr/bin/git"):
-            require_tools()
+            require_tools(["git", "claude", "gh"])
 
     def test_raises_system_exit_when_glab_missing(self):
         def selective_which(tool):
@@ -122,9 +213,23 @@ class TestRequireTools:
             patch("improve.process.shutil.which", side_effect=selective_which),
             pytest.raises(SystemExit) as exc_info,
         ):
-            require_tools(ci_tool="glab")
+            require_tools(["git", "claude", "glab"])
 
         assert exc_info.value.code == 1
+
+    def test_exits_when_codex_is_missing(self, caplog):
+        def which(tool):
+            return None if tool == "codex" else f"/usr/bin/{tool}"
+
+        with (
+            patch("improve.process.shutil.which", side_effect=which),
+            caplog.at_level(logging.ERROR, logger="improve"),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            require_tools(["git", "claude", "gh", "codex"])
+
+        assert exc_info.value.code == 1
+        assert caplog.messages == ["preflight] Missing required tools: codex"]
 
 
 class TestFormatDuration:
@@ -233,3 +338,52 @@ class TestRunPreflight:
 
         push_cmd = calls[1]
         assert "my-feature" in push_cmd
+
+
+class TestTerminate:
+    def test_skips_a_process_that_already_exited(self):
+        proc = MagicMock()
+        proc.poll.return_value = 0
+
+        terminate(proc, "claude")
+
+        proc.terminate.assert_not_called()
+
+    def test_terminates_a_running_process(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+
+        terminate(proc, "claude")
+
+        proc.terminate.assert_called_once()
+        proc.wait.assert_called_once_with(timeout=5)
+        proc.kill.assert_not_called()
+
+    def test_kills_the_process_when_it_ignores_terminate(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 5), None]
+
+        terminate(proc, "claude")
+
+        proc.kill.assert_called_once()
+        assert proc.wait.call_count == 2
+
+    def test_still_kills_the_process_when_terminate_raises(self):
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.terminate.side_effect = OSError("gone")
+        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 5), None]
+
+        terminate(proc, "claude")
+
+        proc.kill.assert_called_once()
+
+    def test_logs_which_agent_is_being_terminated(self, caplog):
+        proc = MagicMock()
+        proc.poll.return_value = None
+
+        with caplog.at_level(logging.INFO, logger="improve"):
+            terminate(proc, "codex")
+
+        assert caplog.messages == ["codex] Terminating subprocess..."]

@@ -52,7 +52,7 @@ class TestShutdown:
         loop.loop_start = 1.0
 
         with (
-            patch("improve.claude.terminate_active"),
+            patch("improve.runner.terminate_active"),
             patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
         ):
@@ -65,7 +65,7 @@ class TestShutdown:
         loop.loop_start = 1.0
 
         with (
-            patch("improve.claude.terminate_active"),
+            patch("improve.runner.terminate_active"),
             patch.object(loop.state, "save", side_effect=TypeError("not serializable")),
             patch("builtins.print"),
             pytest.raises(SystemExit) as exc_info,
@@ -78,7 +78,7 @@ class TestShutdown:
         loop = _make_loop(tmp_path, monkeypatch)
 
         with (
-            patch("improve.claude.terminate_active") as mock_terminate,
+            patch("improve.runner.terminate_active") as mock_terminate,
             patch("builtins.print"),
             pytest.raises(SystemExit),
         ):
@@ -515,6 +515,47 @@ class TestSquashBranch:
 
         mock_squash.assert_not_called()
 
+    def test_does_not_squash_when_the_council_left_unreviewed_changes(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.COUNCIL, squash=True)
+
+        def abort(_loop, _iteration, _phases):
+            loop.unsafe_to_squash = True
+            return False
+
+        with (
+            patch("improve.git.squash_branch") as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.council.run_iteration", side_effect=abort),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            loop.run(1, 1)
+
+        mock_squash.assert_not_called()
+        assert "loop] Not squashing: the branch holds changes nobody reviewed" in caplog.messages
+
+    def test_does_not_squash_when_uncommitted_changes_would_be_swept_in(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        loop = _make_loop(tmp_path, monkeypatch, squash=True)
+        loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Extracted helper", True, 0))
+
+        with (
+            patch("improve.git.changed_files", return_value=["notes.txt"]),
+            patch("improve.git.squash_branch") as mock_squash,
+            patch("improve.git.sync_with_main", return_value=True),
+            patch.object(loop, "run_sequential_iteration", return_value=False),
+            caplog.at_level(logging.WARNING, logger="improve"),
+        ):
+            loop.run(1, 1)
+
+        mock_squash.assert_not_called()
+        assert (
+            "loop] Not squashing: uncommitted changes would be swept in: notes.txt"
+            in caplog.messages
+        )
+
     def test_does_not_squash_when_flag_is_false(self, tmp_path, monkeypatch):
         loop = _make_loop(tmp_path, monkeypatch, squash=False)
         loop.state.add(PhaseResult(1, "simplify", True, ["a.py"], "Stuff", True, 0))
@@ -837,7 +878,7 @@ class TestShutdownElapsedHandling:
         loop.loop_start = 0.0
 
         with (
-            patch("improve.claude.terminate_active"),
+            patch("improve.runner.terminate_active"),
             patch("builtins.print") as mock_print,
             pytest.raises(SystemExit),
         ):
@@ -1108,3 +1149,88 @@ class TestCheckConvergence:
 
         assert "Retrying crashed phase(s) next iteration" in caplog.text
         assert "simplify" in caplog.text
+
+
+class TestCouncilMode:
+    def test_dispatches_to_council_with_the_loop_and_its_phases(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.COUNCIL, phases=["review", "security"])
+
+        with (
+            patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.council.run_iteration", return_value=False) as mock_council,
+        ):
+            loop.run(3, 3)
+
+        mock_council.assert_called_once_with(loop, 3, ["review", "security"])
+
+    def test_keeps_running_council_iterations_until_one_says_stop(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch, mode=Mode.COUNCIL)
+
+        with (
+            patch("improve.git.sync_with_main", return_value=True),
+            patch("improve.council.run_iteration", side_effect=[True, False]) as mock_run,
+        ):
+            loop.run(1, 5)
+
+        assert mock_run.call_count == 2
+        assert loop.state.iteration == 2
+
+    def test_shutdown_terminates_every_tracked_agent_process(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+
+        with (
+            patch("improve.runner.terminate_active") as mock_terminate,
+            patch("builtins.print"),
+            pytest.raises(SystemExit),
+        ):
+            loop.shutdown(2, None)
+
+        mock_terminate.assert_called_once_with()
+
+    def test_shutdown_logs_when_agents_cannot_be_terminated(self, tmp_path, monkeypatch, caplog):
+        loop = _make_loop(tmp_path, monkeypatch)
+
+        with (
+            patch("improve.runner.terminate_active", side_effect=OSError("gone")),
+            patch("builtins.print"),
+            caplog.at_level(logging.WARNING, logger="improve"),
+            pytest.raises(SystemExit),
+        ):
+            loop.shutdown(2, None)
+
+        assert "signal] Failed to terminate agent processes" in caplog.messages
+
+    def test_shutdown_summary_lists_disputed_findings(self, tmp_path, monkeypatch):
+        loop = _make_loop(tmp_path, monkeypatch)
+        loop.state.ledger.append(_disputed_entry())
+
+        with (
+            patch("improve.runner.terminate_active"),
+            patch("builtins.print") as mock_print,
+            pytest.raises(SystemExit),
+        ):
+            loop.shutdown(2, None)
+
+        assert "- app.py:load  Unchecked None" in mock_print.call_args.args[0]
+
+    def test_final_summary_lists_disputed_findings(self, tmp_path, monkeypatch, capsys):
+        loop = _make_loop(tmp_path, monkeypatch)
+        loop.state.ledger.append(_disputed_entry())
+
+        with patch("improve.git.sync_with_main", return_value=False):
+            loop.run(1, 1)
+
+        assert "- app.py:load  Unchecked None" in capsys.readouterr().out
+
+
+def _disputed_entry() -> dict:
+    return {
+        "iteration": 1,
+        "outcome": "disputed",
+        "phase": "review",
+        "file": "app.py",
+        "symbol": "load",
+        "line": 12,
+        "title": "Unchecked None",
+        "reason": "r",
+    }

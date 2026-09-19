@@ -10,7 +10,7 @@ from improve.state import LoopState
 
 def _integration_config(provider=None):
     return Config(
-        claude_timeout=10, ci_timeout=10, ci_provider=provider or MagicMock(spec=CIProvider)
+        agent_timeout=10, ci_timeout=10, ci_provider=provider or MagicMock(spec=CIProvider)
     )
 
 
@@ -68,7 +68,7 @@ class TestBoundaryIntegration:
         provider.get_run_conclusion.return_value = "failure"
         provider.get_failed_logs.return_value = "Error: test failed"
 
-        config = Config(claude_timeout=10, ci_timeout=10, ci_provider=provider)
+        config = Config(agent_timeout=10, ci_timeout=10, ci_provider=provider)
         monkeypatch.setattr("improve.state.STATE_DIR", tmp_path)
         monkeypatch.setattr("improve.state.STATE_FILE", tmp_path / "state.json")
         state = LoopState(branch="feature", started_at="2025-01-01T00:00:00")

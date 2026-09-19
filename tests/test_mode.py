@@ -11,5 +11,8 @@ class TestMode:
     def test_parallel_value_is_parallel(self):
         assert Mode.PARALLEL.value == "parallel"
 
-    def test_enum_has_exactly_three_members(self):
-        assert len(Mode) == 3
+    def test_council_value_is_council(self):
+        assert Mode.COUNCIL.value == "council"
+
+    def test_enum_has_exactly_four_members(self):
+        assert len(Mode) == 4

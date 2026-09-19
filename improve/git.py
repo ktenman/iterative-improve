@@ -39,8 +39,7 @@ def changed_files(cwd: str | None = None) -> list[str]:
     if cwd:
         cmd.extend(["-C", cwd])
     cmd.extend(["status", "--porcelain", "-z", "--no-renames", "--untracked-files=all"])
-    entries = run(cmd).stdout.split("\0")
-    paths = (entry[3:] for entry in entries if entry)
+    paths = (entry[3:] for entry in run(cmd).stdout.split("\0") if entry)
     return [p for p in paths if not p.startswith(".improve-loop/")]
 
 
@@ -50,7 +49,8 @@ def changed_files_since(baseline: list[str]) -> list[str]:
 
 
 def diff_vs_main() -> str:
-    return run(["git", "diff", "--name-only", "main...HEAD"]).stdout.strip()
+    result = run(["git", "diff", "--name-only", "-z", "main...HEAD"])
+    return "\n".join(f for f in result.stdout.split("\0") if f)
 
 
 def has_conflicts() -> bool:
