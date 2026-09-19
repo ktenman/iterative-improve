@@ -1,12 +1,15 @@
 import json
 import logging
+from dataclasses import replace
 from itertools import pairwise
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 import improve.claude
+import improve.process
 from improve.claude import (
+    WRITE_TOOLS,
     ClaudeResult,
     Result,
     TextDelta,
@@ -15,8 +18,12 @@ from improve.claude import (
     ToolStop,
     _classify_events,
     _summarize_tool_input,
+    ask_claude,
     run_claude,
 )
+from tests.conftest import _test_config
+
+SCHEMA = {"type": "object", "properties": {"findings": {"type": "array"}}}
 
 
 def _make_process(stdout_lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
@@ -52,51 +59,19 @@ def _result(text: str) -> str:
     return json.dumps({"type": "result", "result": text}) + "\n"
 
 
-class TestTerminateProcess:
-    def test_skips_already_exited_process(self):
-        proc = MagicMock()
-        proc.poll.return_value = 0
-
-        improve.claude._terminate_process(proc)
-
-        proc.terminate.assert_not_called()
-
-    def test_terminates_running_process(self):
-        proc = MagicMock()
-        proc.poll.return_value = None
-
-        improve.claude._terminate_process(proc)
-
-        proc.terminate.assert_called_once()
-
-    def test_kills_process_when_terminate_times_out(self):
-        import subprocess
-
-        proc = MagicMock()
-        proc.poll.return_value = None
-        proc.wait.side_effect = [subprocess.TimeoutExpired("cmd", 5), None]
-
-        improve.claude._terminate_process(proc)
-
-        proc.kill.assert_called_once()
+def _structured_result(data: object) -> str:
+    event = {"type": "result", "result": json.dumps(data), "structured_output": data}
+    return json.dumps(event) + "\n"
 
 
-class TestTerminateActive:
-    def test_terminates_all_active_processes(self):
-        proc1 = MagicMock()
-        proc1.poll.return_value = None
-        proc2 = MagicMock()
-        proc2.poll.return_value = None
-
-        with patch.object(improve.claude, "_active_processes", {proc1, proc2}):
-            improve.claude.terminate_active()
-
-        proc1.terminate.assert_called_once()
-        proc2.terminate.assert_called_once()
-
-    def test_does_nothing_when_no_active_processes(self):
-        with patch.object(improve.claude, "_active_processes", set()):
-            improve.claude.terminate_active()
+def _ask(lines: list[str], session="abc", resume=False, config=None, returncode=0):
+    proc = _make_process(lines, returncode=returncode)
+    with (
+        patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+        patch("improve.claude.threading.Timer"),
+    ):
+        result = ask_claude("prompt", SCHEMA, session, resume, config or _test_config())
+    return result, mock_popen.call_args[0][0]
 
 
 class TestSummarizeToolInput:
@@ -296,11 +271,9 @@ class TestRunClaude:
             patch("improve.claude.subprocess.Popen", return_value=proc),
             patch("improve.claude.threading.Timer"),
         ):
-            import improve.claude
-
             run_claude("prompt")
 
-        assert not improve.claude._active_processes
+        assert not improve.process._active_processes
 
     def test_cancels_timer_after_completion(self):
         proc = _make_process([_result("")])
@@ -321,10 +294,10 @@ class TestRunClaude:
             run_claude("prompt")
             timeout_callback = MockTimer.call_args[0][1]
 
-        with patch("improve.claude._terminate_process") as mock_terminate:
+        with patch("improve.claude.terminate") as mock_terminate:
             timeout_callback()
 
-        mock_terminate.assert_called_once_with(proc)
+        mock_terminate.assert_called_once_with(proc, "claude")
 
     def test_passes_cwd_to_popen(self):
         proc = _make_process([_result("")])
@@ -417,7 +390,7 @@ class TestRunClaude:
         from improve.config import Config
 
         proc = _make_process([_result("")])
-        config = Config(claude_timeout=42, ci_timeout=60)
+        config = Config(agent_timeout=42, ci_timeout=60)
         with (
             patch("improve.claude.subprocess.Popen", return_value=proc),
             patch("improve.claude.threading.Timer") as MockTimer,
@@ -458,6 +431,41 @@ class TestRunClaude:
             text, _ = run_claude("prompt", quiet=True)
 
         assert text == "Final"
+
+    def test_starts_claude_with_the_configured_effort(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt", config=replace(_test_config(), effort="medium"))
+
+        assert ("--effort", "medium") in pairwise(mock_popen.call_args[0][0])
+
+    def test_keeps_skipping_permissions_so_it_can_edit_files(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt")
+
+        argv = mock_popen.call_args[0][0]
+        assert "--dangerously-skip-permissions" in argv
+        assert "--permission-mode" not in argv
+
+    def test_leaves_tools_and_output_unrestricted(self):
+        proc = _make_process([_result("")])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            run_claude("prompt")
+
+        argv = mock_popen.call_args[0][0]
+        assert "--disallowedTools" not in argv
+        assert "--json-schema" not in argv
+        assert "--session-id" not in argv
 
 
 class TestClassifyEvents:
@@ -522,3 +530,78 @@ class TestClassifyEvents:
         events = list(_classify_events(iter([line])))
 
         assert events == []
+
+    def test_result_carries_the_structured_output(self):
+        line = json.dumps({"type": "result", "result": "{}", "structured_output": {"a": 1}})
+
+        events = list(_classify_events(iter([line + "\n"])))
+
+        assert events == [Result("{}", "", {"a": 1})]
+
+
+class TestAskClaude:
+    def test_returns_the_structured_output_and_elapsed_time(self):
+        (data, elapsed), _ = _ask([_structured_result({"findings": []})])
+
+        assert data == {"findings": []}
+        assert isinstance(elapsed, float)
+
+    def test_starts_a_new_session_with_the_given_id(self):
+        _, argv = _ask([_structured_result({})], session="abc")
+
+        assert ("--session-id", "abc") in pairwise(argv)
+        assert "--resume" not in argv
+
+    def test_resumes_the_given_session(self):
+        _, argv = _ask([_structured_result({})], session="abc", resume=True)
+
+        assert ("--resume", "abc") in pairwise(argv)
+        assert "--session-id" not in argv
+
+    def test_reviews_in_plan_mode_instead_of_skipping_permissions(self):
+        _, argv = _ask([_structured_result({})])
+
+        assert ("--permission-mode", "plan") in pairwise(argv)
+        assert ("--permission-prompts", "none") in pairwise(argv)
+        assert "--dangerously-skip-permissions" not in argv
+
+    def test_turns_off_the_tools_that_edit_files(self):
+        _, argv = _ask([_structured_result({})])
+
+        assert WRITE_TOOLS == "Edit,Write,NotebookEdit"
+        assert ("--disallowedTools", "Edit,Write,NotebookEdit") in pairwise(argv)
+
+    def test_passes_the_schema_as_json(self):
+        _, argv = _ask([_structured_result({})])
+
+        assert ("--json-schema", json.dumps(SCHEMA)) in pairwise(argv)
+
+    def test_keeps_the_pinned_model_and_uses_the_configured_effort(self):
+        _, argv = _ask([_structured_result({})], config=replace(_test_config(), effort="medium"))
+
+        assert ("--model", "opus[1m]") in pairwise(argv)
+        assert ("--effort", "medium") in pairwise(argv)
+
+    def test_runs_in_the_current_directory(self):
+        proc = _make_process([_structured_result({})])
+        with (
+            patch("improve.claude.subprocess.Popen", return_value=proc) as mock_popen,
+            patch("improve.claude.threading.Timer"),
+        ):
+            ask_claude("prompt", SCHEMA, "abc", False, _test_config())
+
+        assert mock_popen.call_args[1]["cwd"] is None
+
+    def test_raises_when_the_result_has_no_structured_output(self):
+        with pytest.raises(RuntimeError, match="no structured output: plain text"):
+            _ask([_result("plain text")])
+
+    def test_raises_when_the_structured_output_is_not_an_object(self):
+        with pytest.raises(RuntimeError, match="no structured output"):
+            _ask([_structured_result([1, 2])])
+
+    def test_raises_with_claudes_error_when_the_call_fails(self):
+        failure = {"type": "result", "is_error": True, "result": "Usage limit reached"}
+
+        with pytest.raises(RuntimeError, match="Usage limit reached"):
+            _ask([json.dumps(failure) + "\n"], returncode=1)

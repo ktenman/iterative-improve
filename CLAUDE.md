@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 CLI tool that runs iterative code improvement loops on feature branches using Claude Code and GitHub Actions CI. Each iteration runs configurable phases (`simplify`, `review`, `security`), commits fixes, pushes, and monitors CI until the code converges or the iteration limit is reached.
 
+`--council` makes Claude and Codex review each iteration read-only; after a two-round agreement, Claude fixes only the agreed findings.
+
 ## Commands
 
 ```bash
@@ -17,11 +19,13 @@ iterative-improve                           # runs continuously until convergenc
 iterative-improve -n 5                      # cap at 5 iterations
 iterative-improve --batch                   # all phases then CI once (faster)
 iterative-improve --parallel                # phases in parallel via git worktrees (fastest)
+iterative-improve --council                 # Claude + Codex review, Claude fixes agreed items
+iterative-improve --council --effort medium # faster, cheaper council iterations
 iterative-improve --resume                  # resume after interruption
 iterative-improve --skip-ci                 # skip CI checks
 iterative-improve --phases simplify,review  # specific phases only
 iterative-improve --squash                  # squash commits when done
-iterative-improve --phase-timeout 300       # Claude subprocess timeout (default: 900s)
+iterative-improve --phase-timeout 300       # agent call timeout (default: 2700s at max effort, 900s at medium)
 
 # Lint
 uv run ruff check improve/ tests/
@@ -39,16 +43,21 @@ All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 
 - **cli.py** — Argument parsing, logging setup, phase validation, entry point
 - **config.py** — Config dataclass holding runtime settings (timeouts, CI provider)
-- **mode.py** — Mode enum (sequential, batch, parallel)
+- **mode.py** — Mode enum (sequential, batch, parallel, council)
 - **platform.py** — Platform enum (github, gitlab)
-- **runner.py** — `IterationLoop` class: orchestration, signal handling (SIGINT/SIGTERM save state before exit), phase execution, batch/sequential/parallel iteration, squash, results summary
+- **runner.py** — `IterationLoop` class: orchestration, signal handling (SIGINT/SIGTERM save state before exit), phase execution, batch/sequential/parallel/council iteration, squash, results summary
 - **parallel.py** — Parallel phase execution using git worktrees and `ThreadPoolExecutor`; each phase runs `claude -p` in its own worktree, changes are merged back and committed as one
-- **claude.py** — Spawns `claude -p` as subprocess with `stream-json` output format, parses streaming events, tracks active processes (thread-safe) for graceful shutdown
+- **council.py** — One council iteration: parallel read-only reviews, merge, two rounds, Claude fix of agreed items, ledger, commit/CI; two crashes in a row stop the loop
+- **council_prompts.py** — Review, round-1, round-2 and fix prompts for council mode
+- **rounds.py** — Two-round agreement protocol (fix/skip, then mine/theirs) with pure settle rules
+- **findings.py** — Finding/Report dataclasses, strict JSON schemas, merge and ledger filter rules
+- **codex.py** — Runs `codex exec` / `codex exec resume` read-only, parses `--json` events, model preflight
+- **claude.py** — Spawns `claude -p` as subprocess with `stream-json` output format, parses streaming events
 - **ci.py** — CI orchestration: polls for new runs, waits for completion, handles cancellations and retries
 - **ci_gh.py** — GitHub Actions CI provider (`gh` CLI)
 - **ci_glab.py** — GitLab CI provider (`glab` CLI)
 - **git.py** — Git operations: diff vs main, commit+push, sync/merge with main, squash branch, conflict resolution, worktree management (create/remove/apply changes)
-- **process.py** — Thin `subprocess.run` wrapper, validates required external tools, preflight checks
+- **process.py** — Thin `subprocess.run` wrapper, validates required external tools, preflight checks, tracks running agent processes (thread-safe) for graceful shutdown
 - **phases.py** — Defines available phases (simplify/review/security) and their focus areas; builds prompts for phases, CI fixes, and squash commits; extracts `SUMMARY:` lines from Claude output; generates commit messages
 - **state.py** — `LoopState` and `PhaseResult` dataclasses, JSON persistence to `.improve-loop/state.json`
 - **version.py** — Checks GitHub releases for newer versions, runs in background thread at startup
@@ -57,20 +66,21 @@ All source is in `improve/` (flat layout). Entry point: `improve.cli:main`.
 
 - No external Python dependencies — stdlib only
 - Requires Python >= 3.10
-- External tools required at runtime: `git`, `claude` (Claude Code CLI), `gh` (GitHub CLI)
+- External tools required at runtime: `git`, `claude` (Claude Code CLI), `gh` (GitHub CLI); `codex` only with `--council`
 - State persists to `.improve-loop/` directory (state.json + run.log)
 - Three phases available: `simplify`, `review`, `security` — configurable via `--phases`
 - Runs continuously by default (until convergence); use `-n` to cap iterations
-- Claude subprocess timeout: configurable via `--phase-timeout` (default 900s)
+- Agent call timeout: `--phase-timeout`, default 2700s at `--effort max` and 900s at `--effort medium`
 - CI run timeout: configurable via `--ci-timeout` (default 15 min)
 - CI fix retries capped at 5 attempts per phase
 - Crash recovery: phase exceptions are caught, working tree is cleaned, loop continues
-- `--batch` and `--parallel` are mutually exclusive (argparse enforced)
+- `--batch`, `--parallel` and `--council` are mutually exclusive (argparse enforced)
 - `--parallel` runs all phases concurrently in git worktrees, merges changes, single commit+push
 - `--squash` squashes all branch commits into one via `git reset --soft` + force push
 - CI waits settle on run IDs (3 checks, 5s apart) to handle rapid re-triggers
 - Cancelled CI runs are automatically retried (up to 3 times)
 - Ruff configured with line-length=100, target py310
+- `--council` never lets Codex write (`-s read-only` for reviews, `-c sandbox_mode=read-only` for resumed rounds); Claude reviews with edit tools disabled and stray edits are discarded; settled findings are kept in the `state.json` ledger
 
 ## Code Standards
 

@@ -5,7 +5,7 @@ import signal
 import sys
 import time
 
-from improve import ci, claude, color, git
+from improve import ci, claude, color, council, git
 from improve.config import Config
 from improve.mode import Mode
 from improve.parallel import run_parallel_batch
@@ -17,7 +17,7 @@ from improve.phases import (
     extract_summary,
     strip_code_fences,
 )
-from improve.process import format_duration
+from improve.process import format_duration, terminate_active
 from improve.state import CIFixResult, LoopState, PhaseResult, format_summary
 
 logger = logging.getLogger("improve")
@@ -43,6 +43,7 @@ class IterationLoop:
         self.squash = squash
         self.continuous = continuous
         self.loop_start: float = 0.0
+        self.unsafe_to_squash = False
         self._active_phases: list[str] = list(phases)
 
     def install_signal_handlers(self) -> None:
@@ -52,16 +53,16 @@ class IterationLoop:
     def shutdown(self, signum: int, _frame: object) -> None:
         logger.info("signal] Caught %s, shutting down...", signal.Signals(signum).name)
         try:
-            claude.terminate_active()
+            terminate_active()
         except Exception:
-            logger.warning("signal] Failed to terminate Claude processes", exc_info=True)
+            logger.warning("signal] Failed to terminate agent processes", exc_info=True)
         try:
             self.state.save()
         except Exception:
             logger.warning("signal] Failed to save state during shutdown", exc_info=True)
         try:
             elapsed = time.monotonic() - self.loop_start if self.loop_start else 0
-            print(format_summary(self.state.results, elapsed))
+            print(format_summary(self.state.results, elapsed, self.state.ledger))
         except Exception:
             logger.warning("signal] Failed to print summary during shutdown", exc_info=True)
         sys.exit(130)
@@ -241,6 +242,14 @@ class IterationLoop:
         return not self._check_convergence(results)
 
     def _squash_branch(self) -> None:
+        if self.unsafe_to_squash:
+            logger.warning("loop] Not squashing: the branch holds changes nobody reviewed")
+            return
+        uncommitted = git.changed_files()
+        if uncommitted:
+            files = ", ".join(uncommitted[:5])
+            logger.warning("loop] Not squashing: uncommitted changes would be swept in: %s", files)
+            return
         kept = self.state.kept_results()
         if not kept:
             logger.info("loop] No changes to squash")
@@ -277,6 +286,8 @@ class IterationLoop:
                 keep_going = self.run_parallel_batch_iteration(i)
             elif self.mode == Mode.BATCH:
                 keep_going = self.run_batch_iteration(i)
+            elif self.mode == Mode.COUNCIL:
+                keep_going = council.run_iteration(self, i, self._active_phases)
             else:
                 keep_going = self.run_sequential_iteration(i)
             if not keep_going:
@@ -284,6 +295,6 @@ class IterationLoop:
 
         total = time.monotonic() - self.loop_start
         logger.info("loop] Finished in %s", format_duration(total))
-        print(format_summary(self.state.results, total))
+        print(format_summary(self.state.results, total, self.state.ledger))
         if self.squash:
             self._squash_branch()

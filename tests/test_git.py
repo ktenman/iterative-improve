@@ -118,11 +118,15 @@ class TestChangedFiles:
 
 
 class TestDiffVsMain:
-    def test_returns_diff_output_stripped(self):
-        with patch("improve.git.run", return_value=_cp(stdout="src/a.py\nsrc/b.py\n")) as mock_run:
+    def test_returns_one_changed_file_per_line(self):
+        with patch("improve.git.run", return_value=_cp(stdout="src/a.py\0src/b.py\0")) as mock_run:
             assert git.diff_vs_main() == "src/a.py\nsrc/b.py"
 
-        mock_run.assert_called_once_with(["git", "diff", "--name-only", "main...HEAD"])
+        mock_run.assert_called_once_with(["git", "diff", "--name-only", "-z", "main...HEAD"])
+
+    def test_reads_raw_paths_so_a_non_ascii_name_is_not_quoted(self):
+        with patch("improve.git.run", return_value=_cp(stdout="caf\u00e9.py\0")):
+            assert git.diff_vs_main() == "caf\u00e9.py"
 
 
 class TestHasConflicts:

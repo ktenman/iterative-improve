@@ -7,6 +7,8 @@ Automate the feedback loop between Claude Code and your CI pipeline.
 
 Researchers tweak parameters in small steps until results improve. Same idea, but for code. One-shot Claude is hit or miss, so `iterative-improve` puts it in a loop. It runs your branch through multiple passes (cleanup, review, security), commits fixes, and waits for CI. Build breaks? Error logs go back to Claude for another try. One command, walk away, green build.
 
+Want a second opinion? With `--council`, Claude and OpenAI's Codex review the branch together, and Claude fixes only what both agree on. See [Council mode](#council-mode).
+
 The approach combines iterative self-refinement ([Self-Refine](https://arxiv.org/abs/2303.17651), [Reflexion](https://arxiv.org/abs/2303.11366)) with a [quality ratchet](https://leaddev.com/software-quality/introducing-quality-ratchets-tool-managing-complex-systems) — the LLM drives improvements, CI prevents regressions. More in [Background & References](#background--references).
 
 ## Install
@@ -35,6 +37,7 @@ uv tool upgrade iterative-improve
 - [`uv`](https://docs.astral.sh/uv/) (package manager)
 - [`claude`](https://claude.ai/code) CLI (Claude Code), logged in, with access to [Claude Opus with 1M context](https://code.claude.com/docs/en/model-config#extended-context-with-1m) (included on Max, Team and Enterprise plans; Pro plans need usage credits)
 - [`gh`](https://cli.github.com/) CLI (GitHub) or [`glab`](https://gitlab.com/gitlab-org/cli) CLI (GitLab), logged in
+- For `--council` only: the [`codex`](https://github.com/openai/codex) CLI, logged in, with access to the model you pass in `--codex-model` (default `gpt-6-astra`)
 - `git`, with an `origin` remote you can push to
 
 The repository's base branch must be called `main`: the tool compares your branch with it, merges `origin/main` into your branch, and squashes onto it.
@@ -68,6 +71,15 @@ iterative-improve -n 5 --parallel
 iterative-improve -n 5 --phases simplify,review
 iterative-improve -n 5 --phases security
 
+# Council mode: Claude and Codex review, Claude fixes what both agree on
+iterative-improve -n 3 --council
+
+# Faster, cheaper council iterations
+iterative-improve -n 3 --council --effort medium
+
+# Another Codex model
+iterative-improve -n 3 --council --codex-model <model>
+
 # Squash all branch commits into one when done
 iterative-improve -n 5 --squash
 
@@ -96,29 +108,33 @@ iterative-improve -n 5 --no-color
 |------|---------|-------------|
 | `-n`, `--iterations` | until nothing changes | Max iterations |
 | `--phases` | `simplify,review,security` | Comma-separated phases to run, in this order |
-| `--batch` | off | Run all phases, then check CI once per iteration. Can't be combined with `--parallel` |
-| `--parallel` | off | Run all phases at the same time in git worktrees, then check CI once. Can't be combined with `--batch` |
+| `--batch` | off | Run all phases, then check CI once per iteration. Can't be combined with `--parallel` or `--council` |
+| `--parallel` | off | Run all phases at the same time in git worktrees, then check CI once. Can't be combined with `--batch` or `--council` |
+| `--council` | off | Claude and Codex review together; Claude fixes only what both agree on. See [Council mode](#council-mode). Can't be combined with `--batch` or `--parallel` |
+| `--effort` | `max` | `max` or `medium`, for every Claude and Codex call except merge-conflict resolution, which always uses `max` |
+| `--codex-model` | `gpt-6-astra` | Codex model for `--council`. Model names change often; the tool checks the model before it starts |
 | `--squash` | off | Squash all branch commits into one after finishing (force-pushes) |
 | `--resume` | off | Continue from saved state after an interruption |
 | `--skip-ci` | off | Don't wait for CI and skip the `gh`/`glab` login checks. Commits are still pushed |
 | `--ci-timeout` | 15 | Minutes to wait for a CI run to finish (minimum 1) |
 | `--ci-provider` | auto-detect | `github` or `gitlab`. Auto-detect picks `gitlab` if the `origin` URL contains "gitlab", otherwise `github` |
 | `--ci-workflow` | auto-detect | GitHub Actions workflow to watch. Auto-detect looks for an active workflow named `ci`, then `build`, `test`, `tests`, `pipeline` (any case). If none matches, it watches the latest run of any workflow |
-| `--phase-timeout` | 900 | Seconds before a Claude session is killed (minimum 30). Merge-conflict resolution always uses 900 |
+| `--phase-timeout` | 2700 at `max`, 900 at `medium` | Seconds before a Claude or Codex call is killed (minimum 30). Merge-conflict resolution always uses 900 |
 | `--no-color` | off | Disable colored output (also respects `NO_COLOR` env var) |
 
 ## How Claude is run
 
-Every Claude call starts a fresh, non-interactive Claude Code session. That covers each phase, each CI fix, merge-conflict resolution, and the `--squash` commit message:
+Every Claude call starts a fresh, non-interactive Claude Code session (council rounds continue the review's session). That covers each phase, each CI fix, merge-conflict resolution, and the `--squash` commit message:
 
 ```bash
 claude -p --output-format stream-json --verbose --include-partial-messages \
-  --dangerously-skip-permissions --model 'opus[1m]' --effort max
+  --dangerously-skip-permissions --model 'opus[1m]' --effort <--effort>
 ```
 
 - **Model `opus[1m]`**: the newest Claude Opus with the 1M-token context window.
-- **Effort `max`**: the highest reasoning effort, which also uses the most tokens.
-- **Overrides**: both flags take precedence over your own choices (`/model` and the `model` and `effortLevel` settings). The exception is the `CLAUDE_CODE_EFFORT_LEVEL` environment variable, which replaces `--effort max` if it's set. Limits still apply: a `maxEffortLevel` setting caps the effort, and an organization's model allowlist can block the model.
+- **Effort**: `--effort`, `max` by default. `max` is the highest reasoning effort and also uses the most tokens; `medium` is faster and cheaper. Merge-conflict resolution always uses `max`.
+- **Council reviews and rounds** add `--disallowedTools Edit,Write,NotebookEdit`, `--json-schema <schema>` and `--session-id <uuid>` (review) or `--resume <uuid>` (rounds). Claude can still run shell commands there, so the tool discards any file a reviewer changes.
+- **Overrides**: both flags take precedence over your own choices (`/model` and the `model` and `effortLevel` settings). The exception is the `CLAUDE_CODE_EFFORT_LEVEL` environment variable, which replaces `--effort` if it's set. Limits still apply: a `maxEffortLevel` setting caps the effort, and an organization's model allowlist can block the model.
 - **No permission prompts**: `--dangerously-skip-permissions` lets Claude edit files and run any command in your repo without asking. Only run the tool on code you trust.
 - **Your Claude Code setup still applies**: your login, your `CLAUDE.md` files and the rest of your Claude Code configuration. Put project rules in `CLAUDE.md`.
 - **Output**: the prompt is sent on stdin. Claude's reply is streamed to your terminal (except in `--parallel` mode and for the squash message), and each tool call is logged as one line.
@@ -132,6 +148,95 @@ claude -p --output-format stream-json --verbose --include-partial-messages \
 | **security** | Fix security holes (injection, auth flaws, exposed secrets, insecure deserialization, path traversal, vulnerable dependencies) and error-handling problems (silent failures, catch blocks that are too broad) |
 
 Each phase is given the names of the files your branch changed compared with `main`, plus summaries of what earlier iterations already fixed. Claude edits the files directly, runs the project's lint/format/test commands where appropriate, and ends with a one-line summary that becomes the commit message. `review` and `security` only fix issues they're highly confident about, and they ignore problems that existed before your changes. The full prompts are in [`improve/phases.py`](improve/phases.py).
+
+## Council mode
+
+`--council` replaces the phase-by-phase loop with a two-model review. Claude and [Codex](https://github.com/openai/codex) review the branch at the same time, without editing anything. They agree on a fix plan in at most two rounds, and **Claude implements only the agreed items**. Codex never writes files.
+
+> **Leave the repo alone while council mode runs.** Any file that changes during the reviews or rounds counts as a reviewer's edit: the tool then restores the tracked files that changed and deletes the untracked ones. Files that change while Claude implements the fix are committed with it.
+
+```mermaid
+flowchart LR
+    P["Review prompt<br/>phases + changed files + ledger"] --> RC["Claude review<br/>read-only, JSON"]
+    P --> RX["Codex review<br/>read-only, JSON"]
+    RC --> M{"Merge<br/>findings"}
+    RX --> M
+    M -- nothing left --> STOP1(["Done"])
+    M --> R1["Round 1<br/>both: fix or skip"]
+    R1 --> S{"Settle"}
+    S -- open items --> R2["Round 2<br/>both: mine or theirs"]
+    R2 --> S
+    S -- no fixes agreed --> STOP2(["Done"])
+    S -- agreed plan --> F["Claude fixes<br/>agreed items only"]
+    F --> C["Commit, push, CI<br/>(as in other modes)"]
+    S -. ledger: fixed / skipped / disputed .-> P
+```
+
+### One iteration
+
+1. **Review.** Both models get the same prompt:
+   - the focus areas of every phase in `--phases`;
+   - the files your branch changed;
+   - the ledger of findings earlier iterations already settled.
+
+   Each model answers with JSON findings: phase, file, function (`symbol`), line, severity, confidence, title, detail and a suggested fix.
+2. **Merge.** Findings about the same function in the same file count as one. If either finding names no function, they match when their lines are at most 3 apart. A finding is kept if any of these holds:
+   - both models reported it;
+   - its severity is high or critical;
+   - its confidence is 50 or more.
+
+   Findings in files your branch didn't change, and findings the ledger already settled, are dropped. **If nothing is left, the loop stops.**
+3. **Round 1.** Both models answer `fix` or `skip` for every finding, with an approach and a reason, at the same time. A finding both want to skip is settled. A finding either model leaves out is **unanswered**: it isn't fixed and isn't settled, so the next iteration can raise it again.
+4. **Round 2** (only for findings still open). Each model sees both positions and picks `mine` or `theirs`:
+   - one `mine` and one `theirs`: that version wins;
+   - both `theirs`: Claude's version, since Claude implements it;
+   - both `mine`, or a missing or invalid pick: **disputed**. The finding isn't fixed, and the final summary lists it for you.
+
+   If the winning version says `skip`, the finding is skipped.
+5. **Fix.** If no fix was agreed, the loop stops. Otherwise a fresh Claude session gets only the agreed findings and approaches, implements them, and runs your full test suite.
+6. **Ship.** Changed files are committed and pushed. CI is checked, and fixed by Claude if it fails, as in the other modes. Fixed, skipped and disputed findings go into the ledger in `.improve-loop/state.json`. Later iterations and `--resume` never raise a skipped or disputed finding again, and raise a fixed one only if the fix is wrong or caused a new problem.
+
+The loop also stops when:
+- the agreed fix changes no files;
+- a push fails;
+- CI still fails after Claude's fixes;
+- an iteration crashes twice in a row (for example, an agent call times out). After a single crash, the iteration is retried;
+- an iteration crashes after its fix was already pushed, since the CI result is then unknown.
+
+### Roles
+
+| | Claude | Codex |
+|---|---|---|
+| Review | ✅ read-only (edit tools turned off) | ✅ read-only (OS sandbox) |
+| Agree on the plan | ✅ | ✅ |
+| Write code (fixes, CI fixes, conflict resolution, squash message) | ✅ | ❌ never |
+
+### How Codex is run
+
+```bash
+# Review: a new read-only session. The thread id comes from the thread.started event.
+codex exec --json -s read-only -m gpt-6-astra -c model_reasoning_effort=max \
+  -c 'project_doc_fallback_filenames=["CLAUDE.md"]' \
+  --output-schema <schema file> -o <reply file> -
+
+# Rounds 1 and 2 continue the same thread
+codex exec resume <thread id> --json -c sandbox_mode=read-only -m gpt-6-astra \
+  -c model_reasoning_effort=max -c 'project_doc_fallback_filenames=["CLAUDE.md"]' \
+  --output-schema <schema file> -o <reply file> -
+```
+
+- The prompt is sent on stdin. The schema and reply files live in a temporary directory outside your repo.
+- `project_doc_fallback_filenames` makes Codex follow your `CLAUDE.md` when the repo has no `AGENTS.md`.
+- Your Codex login and `~/.codex/config.toml` still apply. `-m` and `model_reasoning_effort` override the model and effort set there.
+- Before the first iteration, the tool sends Codex one short prompt with your `--codex-model` and `--effort`. If the model or effort isn't available on your login, it stops with Codex's error.
+- Ctrl+C stops Codex as well as Claude.
+
+### Time and cost
+
+Council mode is slow at the default `--effort max`. In the benchmark behind [#60](https://github.com/ktenman/iterative-improve/issues/60):
+- One iteration took about 40 minutes and about $20 of Claude usage (Claude Code's own estimate), plus about 5M Codex tokens.
+- `--effort medium` was about 15 times faster and 7 times cheaper, but it missed the deepest bug the `max` runs found.
+- On a subscription, a long run can hit Claude's usage limit. The iteration then fails, and the loop stops after the second failure in a row. Continue later with `--resume`.
 
 ## How it works
 
@@ -152,12 +257,13 @@ flowchart LR
 
 Before the first iteration, the tool checks that:
 
-- `git`, `claude` and `gh`/`glab` are installed
+- `git`, `claude` and `gh`/`glab` are installed (plus `codex` with `--council`)
 - you're on a branch other than `main`/`master`
 - there are no unresolved merge conflicts (if there are, Claude tries to resolve and commit them)
 - the working tree is clean (`.improve-loop/` doesn't count)
 - the remote is reachable and you can push to it
 - `gh`/`glab` is logged in and can see the repository (skipped with `--skip-ci`)
+- with `--council`: Codex can use `--codex-model` at `--effort`
 
 In the background, it also checks GitHub for a newer release and prints an upgrade hint if there is one.
 
@@ -180,6 +286,7 @@ Each iteration:
 - **Sequential (default)**: each phase is committed, pushed and checked by CI before the next phase starts.
 - **`--batch`**: phases run one after another and each one still commits and pushes, but CI is checked only once, on the newest run after the last phase.
 - **`--parallel`**: all active phases run at the same time, each in its own temporary git worktree. Changed files are copied back into your working tree and committed as one commit, then CI is checked once. If two phases edit the same file, the later phase in `--phases` order wins and a warning is logged.
+- **`--council`**: Claude and Codex review, and Claude fixes what both agree on. See [Council mode](#council-mode).
 
 ### Squash
 
@@ -187,9 +294,9 @@ With `--squash`, once the loop finishes, Claude writes one commit message from t
 
 ### State and resume
 
-- `.improve-loop/state.json` holds the branch, the current iteration and every phase result.
+- `.improve-loop/state.json` holds the branch, the current iteration, every phase result, and in council mode the ledger of settled findings.
 - `.improve-loop/run.log` is a detailed log that includes every git and CI command the tool ran.
-- Ctrl+C (or SIGTERM) stops Claude, saves the state, prints the summary and exits.
+- Ctrl+C (or SIGTERM) stops Claude and Codex, saves the state, prints the summary and exits.
 - `--resume` continues with the next iteration if the saved state belongs to the current branch. Pass the same flags as before.
 
 Add `.improve-loop/` to your `.gitignore` if you don't want it to show up in `git status`.
@@ -241,10 +348,15 @@ The core idea: replace manual trial-and-error with a structured loop where an LL
 improve/
 ├── cli.py         Argument parsing, logging setup, startup checks, entry point
 ├── config.py      Config dataclass for runtime settings
-├── mode.py        Mode enum (sequential, batch, parallel)
+├── mode.py        Mode enum (sequential, batch, parallel, council)
 ├── platform.py    Platform enum (github, gitlab)
 ├── runner.py      IterationLoop: orchestration, signal handling, phase execution
 ├── parallel.py    Parallel phase execution using git worktrees
+├── council.py     Council iteration: parallel reviews, merge, rounds, Claude fix, ledger
+├── council_prompts.py  Review, round and fix prompts for council mode
+├── rounds.py      Two-round agreement between Claude and Codex
+├── findings.py    Finding dataclasses, JSON schemas, merge rules
+├── codex.py       Codex subprocess (read-only), event parsing, model check
 ├── claude.py      Claude subprocess with streaming JSON output
 ├── ci.py          CI orchestration: polling, retries, provider abstraction
 ├── ci_gh.py       GitHub Actions CI provider (gh CLI)

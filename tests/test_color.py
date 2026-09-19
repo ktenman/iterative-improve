@@ -72,6 +72,9 @@ class TestPhaseColor:
     def test_returns_empty_for_unknown_phase(self):
         assert color.phase_color("unknown") == ""
 
+    def test_returns_bold_white_for_council(self):
+        assert color.phase_color("council") == color.BOLD_WHITE
+
 
 class TestStatusMark:
     @pytest.mark.parametrize(
@@ -169,3 +172,10 @@ class TestColorFormatter:
         color_fmt.format(record)
         plain_result = plain_fmt.format(record)
         assert "\033[" not in plain_result
+
+    def test_colorizes_codex_tag(self):
+        color.enabled = True
+        formatter = color.ColorFormatter("%(message)s")
+        record = logging.LogRecord("test", logging.INFO, "", 0, "codex] Running...", (), None)
+        result = formatter.format(record)
+        assert result.startswith(f"{color.GREEN}codex]")

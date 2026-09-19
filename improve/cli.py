@@ -6,10 +6,10 @@ import sys
 import threading
 from datetime import datetime
 
-from improve import color, git
+from improve import codex, color, git
 from improve.ci_gh import GitHubCI
 from improve.ci_glab import GitLabCI
-from improve.config import Config
+from improve.config import DEFAULT_CODEX_MODEL, DEFAULT_EFFORT, EFFORT_TIMEOUTS, Config
 from improve.mode import Mode
 from improve.phases import AVAILABLE_PHASES
 from improve.platform import Platform
@@ -59,6 +59,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run phases in parallel using git worktrees",
     )
+    mode_group.add_argument(
+        "--council",
+        action="store_true",
+        help="Claude and Codex review together; Claude fixes only what both agree on",
+    )
     parser.add_argument("--resume", action="store_true", help="Resume from saved state")
     parser.add_argument(
         "--phases",
@@ -84,8 +89,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--phase-timeout",
         type=int,
-        default=900,
-        help="Phase timeout in seconds (default: %(default)s)",
+        default=None,
+        help="Seconds before a Claude or Codex call is killed "
+        "(default: 2700 at max effort, 900 at medium)",
+    )
+    parser.add_argument(
+        "--effort",
+        choices=list(EFFORT_TIMEOUTS),
+        default=DEFAULT_EFFORT,
+        help="Reasoning effort for every Claude and Codex call (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--codex-model",
+        default=DEFAULT_CODEX_MODEL,
+        help="Codex model for --council (default: %(default)s)",
     )
     parser.add_argument("--no-color", action="store_true", help="Disable colored output")
     return parser.parse_args()
@@ -119,6 +136,15 @@ def _require_clean_tree() -> None:
     sys.exit(1)
 
 
+def _require_codex_model(config: Config) -> None:
+    logger.info("preflight] Checking Codex model %s...", config.codex_model)
+    error = codex.check_model(config)
+    if not error:
+        return
+    logger.error("preflight] Codex cannot use model %s: %s", config.codex_model, error)
+    sys.exit(1)
+
+
 def main() -> None:
     args = _parse_args()
     color.init(force_no_color=args.no_color)
@@ -126,7 +152,7 @@ def main() -> None:
     threading.Thread(target=check_for_update, daemon=True).start()
     platform = Platform(args.ci_provider) if args.ci_provider else git.detect_platform()
     ci_tool = "glab" if platform == Platform.GITLAB else "gh"
-    require_tools(ci_tool)
+    require_tools(["git", "claude", ci_tool, *(["codex"] if args.council else [])])
 
     if args.iterations is not None and args.iterations < 1:
         logger.error("loop] Iterations must be at least 1")
@@ -134,14 +160,19 @@ def main() -> None:
     if args.ci_timeout < 1:
         logger.error("loop] CI timeout must be at least 1 minute")
         sys.exit(1)
-    if args.phase_timeout < 30:
+    phase_timeout = (
+        EFFORT_TIMEOUTS[args.effort] if args.phase_timeout is None else args.phase_timeout
+    )
+    if phase_timeout < 30:
         logger.error("loop] Phase timeout must be at least 30 seconds")
         sys.exit(1)
     ci_provider = GitLabCI() if platform == Platform.GITLAB else GitHubCI(workflow=args.ci_workflow)
     config = Config(
-        claude_timeout=args.phase_timeout,
+        agent_timeout=phase_timeout,
         ci_timeout=args.ci_timeout * 60,
         ci_provider=ci_provider,
+        effort=args.effort,
+        codex_model=args.codex_model,
     )
     phases = _validate_phases(args.phases)
 
@@ -159,6 +190,8 @@ def main() -> None:
 
     _require_clean_tree()
     run_preflight(current_branch, ci_tool, args.skip_ci)
+    if args.council:
+        _require_codex_model(config)
 
     continuous = args.iterations is None
     max_iterations = 1000 if continuous else args.iterations
@@ -181,6 +214,8 @@ def main() -> None:
         mode = Mode.PARALLEL
     elif args.batch:
         mode = Mode.BATCH
+    elif args.council:
+        mode = Mode.COUNCIL
     else:
         mode = Mode.SEQUENTIAL
 
@@ -196,6 +231,7 @@ def main() -> None:
     loop.install_signal_handlers()
     iter_display = "continuous" if continuous else f"{start_iteration}-{max_iterations}"
     border = color.separator()
+    codex_line = f"  Codex:      {config.codex_model}\n" if mode == Mode.COUNCIL else ""
     header = (
         f"\n{border}\n"
         f"  Iterative Improvement Loop v{get_installed_version()}\n"
@@ -203,17 +239,20 @@ def main() -> None:
         f"  Iterations: {iter_display}\n"
         f"  Phases:     {', '.join(phases)}\n"
         f"  Mode:       {mode.value}\n"
+        f"{codex_line}"
+        f"  Effort:     {config.effort} ({config.agent_timeout}s timeout)\n"
         f"  CI:         {'skip' if args.skip_ci else f'{args.ci_timeout}m timeout'}\n"
         f"  Squash:     {'yes' if args.squash else 'no'}\n"
         f"{border}"
     )
     print(header)
     logger.info(
-        "loop] Started: branch=%s iterations=%s phases=%s mode=%s skip_ci=%s",
+        "loop] Started: branch=%s iterations=%s phases=%s mode=%s effort=%s skip_ci=%s",
         current_branch,
         iter_display,
         ",".join(phases),
         mode.value,
+        config.effort,
         args.skip_ci,
     )
 

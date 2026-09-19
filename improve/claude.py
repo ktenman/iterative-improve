@@ -11,41 +11,19 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from improve.config import Config
-from improve.process import format_duration
+from improve.config import DEFAULT_EFFORT, Config
+from improve.process import format_duration, terminate, track, untrack
 
 logger = logging.getLogger("improve")
+
+WRITE_TOOLS = "Edit,Write,NotebookEdit"
+SKIP_PERMISSIONS = ["--dangerously-skip-permissions"]
+READ_ONLY = ["--permission-mode", "plan", "--permission-prompts", "none"]
 
 
 class ClaudeResult(NamedTuple):
     text: str
     elapsed: float
-
-
-_active_processes: set[subprocess.Popen] = set()
-_process_lock = threading.RLock()
-
-
-def _terminate_process(proc: subprocess.Popen) -> None:
-    if proc.poll() is not None:
-        return
-    logger.info("claude] Terminating subprocess...")
-    with contextlib.suppress(OSError):
-        proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError):
-            proc.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=5)
-
-
-def terminate_active() -> None:
-    with _process_lock:
-        processes = list(_active_processes)
-    for proc in processes:
-        _terminate_process(proc)
 
 
 TOOL_SUMMARY_KEYS = {
@@ -99,6 +77,7 @@ class ToolStop:
 class Result:
     text: str
     error: str = ""
+    data: object = None
 
 
 def _classify_events(
@@ -123,7 +102,7 @@ def _classify_events(
             if event.get("is_error"):
                 yield Result("", errors or text)
                 continue
-            yield Result(text, errors)
+            yield Result(text, errors, event.get("structured_output"))
             continue
         if event_type != "stream_event":
             continue
@@ -145,17 +124,15 @@ def _classify_events(
             yield ToolStop()
 
 
-def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool, str]:
-    result_text = ""
-    result_error = ""
+def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[Result, bool]:
+    result = Result("")
     has_streamed = False
     current_tool = ""
     tool_input_chunks: list[str] = []
 
     for event in _classify_events(stdout):
         if isinstance(event, Result):
-            result_text = event.text
-            result_error = event.error
+            result = event
         elif isinstance(event, TextDelta):
             if not quiet:
                 sys.stdout.write(event.text)
@@ -174,10 +151,10 @@ def _parse_stream(stdout: Iterator[str], quiet: bool = False) -> tuple[str, bool
             logger.info("claude] %s", detail)
             current_tool = ""
 
-    return result_text, has_streamed, result_error
+    return result, has_streamed
 
 
-def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
+def _start_claude(prompt: str, cwd: str | None, extra_args: list[str]) -> subprocess.Popen:
     process = subprocess.Popen(
         [
             "claude",
@@ -186,11 +163,9 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
             "stream-json",
             "--verbose",
             "--include-partial-messages",
-            "--dangerously-skip-permissions",
             "--model",
             "opus[1m]",
-            "--effort",
-            "max",
+            *extra_args,
         ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -198,8 +173,7 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
         text=True,
         cwd=cwd,
     )
-    with _process_lock:
-        _active_processes.add(process)
+    track(process, "claude")
     try:
         process.stdin.write(prompt)
     except OSError:
@@ -212,7 +186,7 @@ def _start_claude(prompt: str, cwd: str | None) -> subprocess.Popen:
 def _setup_timeout(process: subprocess.Popen, timeout: int) -> threading.Timer:
     def _on_timeout() -> None:
         logger.warning("claude] Timeout after %ds, terminating", timeout)
-        _terminate_process(process)
+        terminate(process, "claude")
 
     timer = threading.Timer(timeout, _on_timeout)
     timer.daemon = True
@@ -220,15 +194,16 @@ def _setup_timeout(process: subprocess.Popen, timeout: int) -> threading.Timer:
     return timer
 
 
-def run_claude(
-    prompt: str, cwd: str | None = None, quiet: bool = False, config: Config | None = None
-) -> ClaudeResult:
+def _run(
+    prompt: str, cwd: str | None, quiet: bool, config: Config | None, extra_args: list[str]
+) -> tuple[Result, float]:
     logger.info("claude] Running...")
     logger.debug("claude] prompt length: %d chars", len(prompt))
     start = time.monotonic()
-    timeout = config.claude_timeout if config else 900
+    timeout = config.agent_timeout if config else 900
+    effort = config.effort if config else DEFAULT_EFFORT
 
-    process = _start_claude(prompt, cwd)
+    process = _start_claude(prompt, cwd, ["--effort", effort, *extra_args])
     timer = _setup_timeout(process, timeout)
     stderr_lines: list[str] = []
     stderr_thread = threading.Thread(
@@ -236,11 +211,9 @@ def run_claude(
     )
     stderr_thread.start()
 
-    result_text = ""
-    result_error = ""
     has_streamed = False
     try:
-        result_text, has_streamed, result_error = _parse_stream(process.stdout, quiet=quiet)
+        result, has_streamed = _parse_stream(process.stdout, quiet=quiet)
     finally:
         timer.cancel()
         if has_streamed:
@@ -251,9 +224,8 @@ def run_claude(
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
             logger.warning("claude] Process did not exit, terminating")
-            _terminate_process(process)
-        with _process_lock:
-            _active_processes.discard(process)
+            terminate(process, "claude")
+        untrack(process)
 
     stderr = "".join(stderr_lines)
     elapsed = time.monotonic() - start
@@ -261,10 +233,30 @@ def run_claude(
     if process.returncode != 0:
         if stderr:
             logger.warning("claude] stderr: %s", stderr[:300])
-        if not result_text:
-            detail = result_error or stderr
+        if not result.text:
+            detail = result.error or stderr
             raise RuntimeError(f"Claude exited with code {process.returncode}: {detail[:200]}")
 
     logger.info("claude] Done in %s", format_duration(elapsed))
-    logger.debug("claude] output length: %d chars", len(result_text))
-    return ClaudeResult(result_text, elapsed)
+    logger.debug("claude] output length: %d chars", len(result.text))
+    return result, elapsed
+
+
+def run_claude(
+    prompt: str, cwd: str | None = None, quiet: bool = False, config: Config | None = None
+) -> ClaudeResult:
+    result, elapsed = _run(prompt, cwd, quiet, config, SKIP_PERMISSIONS)
+    return ClaudeResult(result.text, elapsed)
+
+
+def ask_claude(
+    prompt: str, schema: dict, session: str, resume: bool, config: Config
+) -> tuple[dict, float]:
+    session_args = ["--resume", session] if resume else ["--session-id", session]
+    structured_args = ["--disallowedTools", WRITE_TOOLS, "--json-schema", json.dumps(schema)]
+    read_only_args = [*READ_ONLY, *structured_args, *session_args]
+    result, elapsed = _run(prompt, None, False, config, read_only_args)
+    if not isinstance(result.data, dict):
+        detail = result.error or result.text
+        raise RuntimeError(f"Claude returned no structured output: {detail[:200]}")
+    return result.data, elapsed
