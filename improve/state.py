@@ -116,6 +116,13 @@ class LoopState:
         last = self.results[-1]
         return last["phase"] == phase and last["summary"] == CRASHED_SUMMARY
 
+    def unchanged_last(self, phase: str) -> bool:
+        finished = [r for r in self.results if r["summary"] != CRASHED_SUMMARY]
+        if not finished:
+            return False
+        last = finished[-1]
+        return last["phase"] == phase and not last["changes_made"]
+
     def context(self) -> str:
         changed = self.kept_results()
         if not changed:
