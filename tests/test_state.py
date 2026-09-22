@@ -397,6 +397,43 @@ class TestCrashedLast:
         assert PhaseResult.crashed(1, "council").summary == CRASHED_SUMMARY == "Phase crashed"
 
 
+class TestUnchangedLast:
+    def test_is_false_without_results(self):
+        assert LoopState(branch="f", started_at="s").unchanged_last("council") is False
+
+    def test_is_true_when_the_last_pass_of_that_phase_changed_nothing(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.no_changes(1, "council"))
+
+        assert state.unchanged_last("council") is True
+
+    def test_is_false_when_the_last_pass_changed_files(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.no_changes(1, "council"))
+        state.add(PhaseResult(2, "council", True, ["app.py"], "Guard empty input", True, 0))
+
+        assert state.unchanged_last("council") is False
+
+    def test_is_false_when_the_unchanged_pass_was_another_phase(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.no_changes(1, "review"))
+
+        assert state.unchanged_last("council") is False
+
+    def test_a_crash_is_not_a_pass_that_changed_nothing(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.crashed(1, "council"))
+
+        assert state.unchanged_last("council") is False
+
+    def test_looks_past_crashes_to_the_last_pass_that_finished(self, tmp_path, monkeypatch):
+        state = _state(tmp_path, monkeypatch)
+        state.add(PhaseResult.no_changes(1, "council"))
+        state.add(PhaseResult.crashed(2, "council"))
+
+        assert state.unchanged_last("council") is True
+
+
 class TestCodexSeconds:
     def test_defaults_to_zero(self):
         assert PhaseResult(1, "review", False, [], "x", True, 0).codex_seconds == 0.0

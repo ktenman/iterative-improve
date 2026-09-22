@@ -161,12 +161,12 @@ flowchart LR
     P --> RX["Codex review<br/>read-only, JSON"]
     RC --> M{"Merge<br/>findings"}
     RX --> M
-    M -- nothing left --> STOP1(["Done"])
+    M -- nothing left --> NF(["No fix this pass<br/>done after two in a row"])
     M --> R1["Round 1<br/>both: fix or skip"]
     R1 --> S{"Settle"}
     S -- open items --> R2["Round 2<br/>both: mine or theirs"]
     R2 --> S
-    S -- no fixes agreed --> STOP2(["Done"])
+    S -- no fixes agreed --> NF
     S -- agreed plan --> F["Claude fixes<br/>agreed items only"]
     F --> C["Commit, push, CI<br/>(as in other modes)"]
     S -. ledger: fixed / skipped / disputed .-> P
@@ -185,7 +185,7 @@ flowchart LR
    - its severity is high or critical;
    - its confidence is 50 or more.
 
-   Findings in files your branch didn't change, and findings the ledger already settled, are dropped. **If nothing is left, the loop stops.**
+   Findings in files your branch didn't change, and findings the ledger already settled, are dropped. **If nothing is left, the pass ends without a fix** (see step 5).
 3. **Round 1.** Both models answer `fix` or `skip` for every finding, with an approach and a reason, at the same time. A finding both want to skip is settled. A finding either model leaves out is **unanswered**: it isn't fixed and isn't settled, so the next iteration can raise it again.
 4. **Round 2** (only for findings still open). Each model sees both positions and picks `mine` or `theirs`:
    - one `mine` and one `theirs`: that version wins;
@@ -193,11 +193,12 @@ flowchart LR
    - both `mine`, or a missing or invalid pick: **disputed**. The finding isn't fixed, and the final summary lists it for you.
 
    If the winning version says `skip`, the finding is skipped.
-5. **Fix.** If no fix was agreed, the loop stops. Otherwise a fresh Claude session gets only the agreed findings and approaches, implements them, and runs your full test suite.
+5. **Fix.** If no fix was agreed, the pass ends without a fix. Otherwise a fresh Claude session gets only the agreed findings and approaches, implements them, and runs your full test suite. If that changes no files, the pass ends without a fix too.
+
+   **The loop stops after two passes in a row without a fix**, since one review is a noisy sample. A pass that ships a fix resets the count. A crashed pass neither counts nor resets it.
 6. **Ship.** Changed files are committed and pushed. CI is checked, and fixed by Claude if it fails, as in the other modes. Fixed, skipped and disputed findings go into the ledger in `.improve-loop/state.json`. Later iterations and `--resume` never raise a skipped or disputed finding again, and raise a fixed one only if the fix is wrong or caused a new problem.
 
 The loop also stops when:
-- the agreed fix changes no files;
 - a push fails;
 - CI still fails after Claude's fixes;
 - an iteration crashes twice in a row (for example, an agent call times out). After a single crash, the iteration is retried;

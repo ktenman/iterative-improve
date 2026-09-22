@@ -124,13 +124,13 @@ def _agents(
 
 
 class TestConvergence:
-    def test_converges_without_debating_when_no_findings_are_left(self, tmp_path, monkeypatch):
+    def test_reviews_again_without_debating_when_no_findings_are_left(self, tmp_path, monkeypatch):
         loop = _loop(tmp_path, monkeypatch)
 
         with _agents(claude=EMPTY, codex=EMPTY) as agents:
             keep_going = run_iteration(loop, 1, ["review"])
 
-        assert keep_going is False
+        assert keep_going is True
         result = loop.state.results[-1]
         assert (result["phase"], result["summary"], result["changes_made"]) == (
             "council",
@@ -141,7 +141,9 @@ class TestConvergence:
         assert (agents.ask.call_count, agents.codex.call_count) == (1, 1)
         agents.fix.assert_not_called()
 
-    def test_logs_the_review_and_the_convergence(self, tmp_path, monkeypatch, caplog):
+    def test_logs_the_review_and_that_the_next_pass_reviews_again(
+        self, tmp_path, monkeypatch, caplog
+    ):
         loop = _loop(tmp_path, monkeypatch)
 
         with _agents(claude=EMPTY, codex=EMPTY), caplog.at_level(logging.INFO, logger="improve"):
@@ -150,10 +152,10 @@ class TestConvergence:
         assert caplog.messages == [
             "council] Claude and Codex are reviewing 2 file(s)...",
             "council] Claude reported 0, Codex 0; 0 left after merging",
-            "loop] Converged: no findings left",
+            "loop] No findings left, reviewing again next iteration",
         ]
 
-    def test_converges_without_asking_anyone_when_nothing_changed_vs_main(
+    def test_reviews_again_without_asking_anyone_when_nothing_changed_vs_main(
         self, tmp_path, monkeypatch
     ):
         loop = _loop(tmp_path, monkeypatch)
@@ -161,7 +163,7 @@ class TestConvergence:
         with _agents(diff="") as agents:
             keep_going = run_iteration(loop, 1, ["review"])
 
-        assert keep_going is False
+        assert keep_going is True
         result = loop.state.results[-1]
         assert (result["phase"], result["summary"], result["changes_made"]) == (
             "council",
@@ -171,7 +173,7 @@ class TestConvergence:
         assert (agents.ask.call_count, agents.codex.call_count) == (0, 0)
         agents.fix.assert_not_called()
 
-    def test_logs_nothing_to_review_and_the_convergence_when_nothing_changed(
+    def test_logs_nothing_to_review_and_that_the_next_pass_reviews_again_when_nothing_changed(
         self, tmp_path, monkeypatch, caplog
     ):
         loop = _loop(tmp_path, monkeypatch)
@@ -181,10 +183,12 @@ class TestConvergence:
 
         assert caplog.messages == [
             "council] No files changed vs main, nothing to review",
-            "loop] Converged: no findings left",
+            "loop] No findings left, reviewing again next iteration",
         ]
 
-    def test_converges_when_both_reviewers_skip_every_finding(self, tmp_path, monkeypatch, caplog):
+    def test_reviews_again_when_both_reviewers_skip_every_finding(
+        self, tmp_path, monkeypatch, caplog
+    ):
         loop = _loop(tmp_path, monkeypatch)
         claude = _replies("Claude", decision="skip")
         codex = _replies("Codex", decision="skip")
@@ -195,13 +199,13 @@ class TestConvergence:
         ):
             keep_going = run_iteration(loop, 1, ["review"])
 
-        assert keep_going is False
+        assert keep_going is True
         assert loop.state.results[-1]["summary"] == "No fixes agreed"
         assert [
             (e["outcome"], e["phase"], e["severity"], e["reason"]) for e in loop.state.ledger
         ] == [("skipped", "review", "high", "Claude reason")]
         assert "council] Skipped: F1" in caplog.messages
-        assert "loop] Converged: no fixes agreed" in caplog.messages
+        assert "loop] No fixes agreed, reviewing again next iteration" in caplog.messages
         agents.fix.assert_not_called()
 
     def test_retries_instead_of_converging_when_no_finding_gets_an_answer(
@@ -234,7 +238,7 @@ class TestConvergence:
         ):
             keep_going = run_iteration(loop, 2, ["review"])
 
-        assert keep_going is False
+        assert keep_going is True
         assert loop.state.ledger == [
             {
                 "iteration": 2,
@@ -324,7 +328,7 @@ class TestFix:
         assert (result["claude_seconds"], result["codex_seconds"]) == (11.0, 9.0)
         assert result["duration_seconds"] == 1.0
 
-    def test_skips_the_findings_and_stops_when_the_fix_changes_nothing(
+    def test_skips_the_findings_and_reviews_again_when_the_fix_changes_nothing(
         self, tmp_path, monkeypatch, caplog
     ):
         loop = _loop(tmp_path, monkeypatch)
@@ -335,13 +339,79 @@ class TestFix:
         ):
             keep_going = run_iteration(loop, 1, ["review"])
 
-        assert keep_going is False
+        assert keep_going is True
         assert loop.state.results[-1]["summary"] == "Agreed fixes changed no files"
         assert [(e["outcome"], e["reason"]) for e in loop.state.ledger] == [
             ("skipped", "The agreed fix changed no files")
         ]
-        assert "loop] Converged: agreed fixes changed no files" in caplog.messages
+        assert (
+            "loop] Agreed fixes changed no files, reviewing again next iteration" in caplog.messages
+        )
         agents.push.assert_not_called()
+
+
+class TestPassesWithoutAFix:
+    def test_two_passes_in_a_row_without_a_fix_stop_the_loop(self, tmp_path, monkeypatch, caplog):
+        loop = _loop(tmp_path, monkeypatch)
+
+        with (
+            _agents(claude=EMPTY, codex=EMPTY),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            first = run_iteration(loop, 1, ["review"])
+            second = run_iteration(loop, 2, ["review"])
+
+        assert (first, second) == (True, False)
+        assert [m for m in caplog.messages if m.startswith("loop]")] == [
+            "loop] No findings left, reviewing again next iteration",
+            "loop] Converged: no findings left",
+        ]
+
+    def test_a_pass_that_ships_a_fix_continues_after_a_pass_without_one(
+        self, tmp_path, monkeypatch
+    ):
+        loop = _loop(tmp_path, monkeypatch)
+        loop.state.add(PhaseResult.no_changes(1, COUNCIL))
+
+        with _agents():
+            keep_going = run_iteration(loop, 2, ["review"])
+
+        assert keep_going is True
+
+    def test_a_pass_that_ships_a_fix_resets_the_count(self, tmp_path, monkeypatch):
+        loop = _loop(tmp_path, monkeypatch)
+        loop.state.add(PhaseResult.no_changes(1, COUNCIL))
+        loop.state.add(PhaseResult(2, COUNCIL, True, ["app.py"], "Guard empty input", True, 0))
+
+        with _agents(claude=EMPTY, codex=EMPTY):
+            keep_going = run_iteration(loop, 3, ["review"])
+
+        assert keep_going is True
+
+    def test_a_crash_does_not_count_as_a_pass_without_a_fix(self, tmp_path, monkeypatch):
+        loop = _loop(tmp_path, monkeypatch)
+        loop.state.add(PhaseResult.crashed(1, COUNCIL))
+
+        with _agents(claude=EMPTY, codex=EMPTY):
+            keep_going = run_iteration(loop, 2, ["review"])
+
+        assert keep_going is True
+
+    def test_a_crash_between_two_passes_without_a_fix_does_not_reset_the_count(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        loop = _loop(tmp_path, monkeypatch)
+        loop.state.add(PhaseResult.no_changes(1, COUNCIL))
+        loop.state.add(PhaseResult.crashed(2, COUNCIL))
+
+        with (
+            _agents(claude=EMPTY, codex=EMPTY),
+            caplog.at_level(logging.INFO, logger="improve"),
+        ):
+            keep_going = run_iteration(loop, 3, ["review"])
+
+        assert keep_going is False
+        assert caplog.messages[-1] == "loop] Converged: no findings left"
 
 
 class TestSessions:

@@ -72,7 +72,7 @@ class CouncilIteration:
         findings = self._review()
         self._discard_stray_edits()
         if not findings:
-            return self._converged("No findings left")
+            return self._result("No findings left")
         agreement = run_rounds(findings, self.ask)
         self._discard_stray_edits()
         if len(agreement.unanswered) == len(findings):
@@ -80,7 +80,7 @@ class CouncilIteration:
         self._record("skipped", agreement.skipped)
         self._record("disputed", [(finding, NO_AGREEMENT) for finding in agreement.disputed])
         if not agreement.fixes:
-            return self._converged("No fixes agreed")
+            return self._result("No fixes agreed")
         return self._fix(agreement.fixes)
 
     def ask(self, agent: str, prompt: str, schema: dict) -> dict:
@@ -187,7 +187,7 @@ class CouncilIteration:
         files = git.changed_files_since(self.baseline)
         if not files:
             self._record("skipped", [(finding, NO_CHANGES) for finding, _ in fixes])
-            return self._converged("Agreed fixes changed no files")
+            return self._result("Agreed fixes changed no files")
         summary = extract_summary(output)
         shipped = self._ship(files, summary, fixes)
         self.claude_seconds += shipped.claude_time
@@ -224,10 +224,6 @@ class CouncilIteration:
         blank = PhaseResult.no_changes(self.iteration, COUNCIL, elapsed, self.claude_seconds)
         return replace(blank, summary=summary, codex_seconds=self.codex_seconds)
 
-    def _converged(self, reason: str) -> PhaseResult:
-        logger.info("loop] Converged: %s", reason.lower())
-        return self._result(reason)
-
 
 def _retry_unless_repeated(crashed_before: bool) -> bool:
     if crashed_before:
@@ -237,8 +233,17 @@ def _retry_unless_repeated(crashed_before: bool) -> bool:
     return True
 
 
+def _review_again_unless_repeated(unchanged_before: bool, reason: str) -> bool:
+    if unchanged_before:
+        logger.info("loop] Converged: %s", reason.lower())
+        return False
+    logger.info("loop] %s, reviewing again next iteration", reason)
+    return True
+
+
 def run_iteration(loop: IterationContext, iteration: int, phases: list[str]) -> bool:
     crashed_before = loop.state.crashed_last(COUNCIL)
+    unchanged_before = loop.state.unchanged_last(COUNCIL)
     council = CouncilIteration(loop, iteration, phases)
     try:
         result = council.run()
@@ -257,4 +262,4 @@ def run_iteration(loop: IterationContext, iteration: int, phases: list[str]) -> 
     if result.changes_made and not result.ci_passed:
         logger.warning("loop] Stopping: push or CI failed after the council's fixes")
         return False
-    return result.changes_made
+    return result.changes_made or _review_again_unless_repeated(unchanged_before, result.summary)
